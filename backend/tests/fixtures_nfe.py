@@ -12,7 +12,7 @@ def chave(numero: int, cnpj: str = CNPJ_EMPRESA, serie: int = 1, ano_mes: str = 
     return (base + "0" * 44)[:43] + "0"
 
 
-def nfe(numero: int, *, tipo_nf="1", cfop="5101", aliquota=12.0, origem="1",
+def nfe(numero: int, *, tipo_nf="1", cfop="5101", aliquota=4.0, origem="1",
         emit_cnpj=CNPJ_EMPRESA, emit_uf="SC", dest_cnpj="98765432000188",
         dest_nome="ALUNOVA REFUSAO LTDA", dest_uf="SP", produto="SUCATA DE ALUMINIO",
         ncm="76020000", quantidade=1000.0, valor=20000.0, data=None, fin="1",

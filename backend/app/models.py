@@ -94,6 +94,14 @@ class NotaItem(Base):
     produto: Mapped["Produto"] = relationship(lazy="joined")
     __table_args__ = (Index("ix_item_prod", "produto_id"),)
 
+    @property
+    def cst_completo(self) -> str | None:
+        """Codigo de 3 digitos que o pessoal do fiscal reconhece: origem (1 digito) + CST do
+        ICMS (2 digitos). Ex.: origem=1 + cst=00 -> "100"."""
+        if self.origem_merc and self.cst:
+            return f"{self.origem_merc}{self.cst}"
+        return None
+
 
 class ConsumoEstoque(Base):
     """Razao de custeio PEPS (decisao 5: custeio, nao vinculacao fiscal)."""
@@ -125,9 +133,13 @@ class Excecao(Base):
 
 
 class RegraTTD(Base):
-    """Aliquotas com vigencia. A virada de fase do TTD nao pode virar chamado de emergencia."""
+    """Aliquotas com vigencia, por produto (NCM) e ambito da operacao. A virada de fase do
+    TTD nao pode virar chamado de emergencia. bloco segue existindo so' para o Excel da
+    contabilidade continuar saindo no formato de sempre - a chave real e' (ncm, ambito)."""
     __tablename__ = "regra_ttd"
     id: Mapped[int] = mapped_column(primary_key=True)
+    ncm: Mapped[str] = mapped_column(String(8))
+    ambito: Mapped[str] = mapped_column(String(15))   # interna | interestadual
     bloco: Mapped[str] = mapped_column(String(2))
     descricao: Mapped[str] = mapped_column(String(80))
     aliquota: Mapped[float] = mapped_column(Numeric(6, 4))

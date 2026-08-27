@@ -42,35 +42,86 @@ def test_xml_ilegivel_e_recusado():
         ler(b"<html>isto nao e uma nota</html>")
 
 
-# ---------------------------------------------------------------- bloco do TTD
-@pytest.mark.parametrize("cfop,aliq,origem,esperado", [
-    ("5101", 12.0, "1", "3"),     # interna
-    ("6101", 4.0, "1", "2"),      # interestadual com mercadoria importada
-    ("6101", 12.0, "0", "1"),     # interestadual nacional
-    ("7101", 0.0, "1", None),     # exportacao: fora do beneficio
+# ------------------------------------------------------- bloco do TTD (por NCM + ambito)
+@pytest.mark.parametrize("ncm,uf,esperado", [
+    ("74040000", "SC", None),     # cobre interno: aliquota 0, fora do beneficio
+    ("74040000", "SP", "1"),      # cobre interestadual: 12%/11,40%
+    ("76020000", "SC", None),     # aluminio interno: aliquota 0, fora do beneficio
+    ("76020000", "SP", "2"),      # aluminio interestadual: 4%/3%
+    ("28046900", "SC", "3"),      # silicio interno: cobra igual
+    ("28046900", "SP", "3"),      # silicio interestadual: cobra igual
 ])
-def test_bloco_vem_do_proprio_xml(cfop, aliq, origem, esperado):
-    nf = ler(nfe(8100, cfop=cfop, aliquota=aliq, origem=origem))
-    bloco, _ = imp.derivar_bloco(nf, nf.itens[0])
+def test_bloco_vem_do_ncm_e_do_ambito(db, ncm, uf, esperado):
+    bloco, _ = imp.derivar_bloco(db, ncm, uf, dt.date(2026, 8, 10))
     assert bloco == esperado
 
 
-def test_aliquota_fora_da_tabela_vira_pendencia():
-    nf = ler(nfe(8101, cfop="6101", aliquota=7.0, origem="0"))
-    bloco, motivo = imp.derivar_bloco(nf, nf.itens[0])
-    assert bloco == "1" and "fora da tabela" in motivo
+def test_ncm_fora_da_tabela_vira_pendencia_sem_chutar(db):
+    bloco, motivo = imp.derivar_bloco(db, "99999999", "SP", dt.date(2026, 8, 10))
+    assert bloco is None and "sem regra" in motivo
+
+
+def test_aliquota_do_xml_diverge_da_tabela_vira_pendencia(db):
+    # NCM do aluminio interestadual manda 4%, XML veio com 12% - grava e abre pendencia,
+    # nao corrige em silencio nem recusa a nota.
+    bloco, motivo = imp.derivar_bloco(db, "76020000", "SP", dt.date(2026, 8, 10),
+                                      aliquota_xml=0.12)
+    assert bloco == "2" and motivo and "diverge" in motivo
 
 
 # ---------------------------------------------------------------- importacao
 def test_saida_entra_no_estoque_e_na_apuracao(cliente, db):
     lote = _sobe(cliente, {"nf.xml": nfe(8200, cfop="5101", aliquota=12.0,
-                                         produto="SILICIO METALICO", ncm="72023000",
+                                         produto="SILICIO METALICO", ncm="28046900",
                                          quantidade=100, valor=1200, data=HOJE)})
     assert lote["importadas"] == 1 and lote["erros"] == 0
     nota = db.execute(select(Nota).where(Nota.numero == 8200)).scalars().one()
     assert nota.tipo == "S" and nota.chave_acesso and len(nota.chave_acesso) == 44
     item = db.execute(select(NotaItem).where(NotaItem.nota_id == nota.id)).scalars().one()
-    assert item.bloco_ttd == "3" and item.origem_merc == "1" and item.ncm == "72023000"
+    assert item.bloco_ttd == "3" and item.origem_merc == "1" and item.ncm == "28046900"
+    assert item.cst_completo == "100"
+
+
+# --------------------------------------------------- filtro de origem (mercadoria importada)
+@pytest.mark.parametrize("numero,origem,entra", [
+    (8151, "1", True), (8152, "6", True),                     # importada: entra
+    (8153, "0", False), (8154, "2", False),                   # nao importada: nao entra
+    (8155, "4", False), (8156, "5", False),
+])
+def test_so_origem_1_e_6_contam_como_importado(cliente, numero, origem, entra):
+    lote = _sobe(cliente, {"nf.xml": nfe(numero, origem=origem, data=HOJE)})
+    situacao = lote["arquivos"][0]["situacao"]
+    assert (situacao != "ignorada") == entra
+
+
+def test_nota_sem_nenhum_item_importado_e_ignorada_com_motivo(cliente):
+    lote = _sobe(cliente, {"nf.xml": nfe(8160, origem="0", data=HOJE)})
+    arq = lote["arquivos"][0]
+    assert arq["situacao"] == "ignorada" and "origem" in arq["motivo"]
+    assert lote["importadas"] == 0
+
+
+def test_nota_mista_entra_mas_item_nao_importado_fica_fora_do_ttd(cliente, db):
+    """Nota com um item de origem importada e outro nao: a nota inteira entra (estoque fica
+    fiel), mas o item nao importado nao recebe bloco e vira pendencia."""
+    xml = nfe(8170, origem="1", produto="SUCATA DE ALUMINIO", ncm="76020000", data=HOJE)
+    # segundo item, origem nacional (0), enxertado no mesmo XML
+    xml_misto = xml.replace(
+        '<det nItem="1">',
+        '<det nItem="2"><prod><cProd>002</cProd><xProd>SUCATA DE ALUMINIO</xProd>'
+        '<NCM>76020000</NCM><CFOP>5101</CFOP><uCom>KG</uCom><qCom>10.0000</qCom>'
+        '<vUnCom>100.000000</vUnCom><vProd>1000.00</vProd></prod>'
+        '<imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><modBC>3</modBC>'
+        '<vBC>1000.00</vBC><pICMS>4.00</pICMS><vICMS>40.00</vICMS></ICMS00></ICMS></imposto>'
+        '</det><det nItem="1">')
+    lote = _sobe(cliente, {"nf.xml": xml_misto})
+    assert lote["arquivos"][0]["situacao"] != "ignorada"
+    nota = db.execute(select(Nota).where(Nota.numero == 8170)).scalars().one()
+    itens = db.execute(select(NotaItem).where(NotaItem.nota_id == nota.id)).scalars().all()
+    assert len(itens) == 2
+    importado = next(i for i in itens if i.origem_merc == "1")
+    nacional = next(i for i in itens if i.origem_merc == "0")
+    assert importado.bloco_ttd == "2" and nacional.bloco_ttd is None
 
 
 def test_entrada_de_importacao(cliente, db):

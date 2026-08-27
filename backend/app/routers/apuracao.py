@@ -60,6 +60,8 @@ def historico(competencia: str, db: Session = Depends(get_db)):
 
 
 class RegraIn(BaseModel):
+    ncm: str
+    ambito: str          # interna | interestadual
     bloco: str
     descricao: str
     aliquota: float
@@ -70,25 +72,27 @@ class RegraIn(BaseModel):
 
 @router.get("/regras")
 def regras(db: Session = Depends(get_db)):
-    linhas = db.execute(select(RegraTTD).order_by(RegraTTD.bloco,
+    linhas = db.execute(select(RegraTTD).order_by(RegraTTD.bloco, RegraTTD.ncm, RegraTTD.ambito,
                                                   RegraTTD.vigencia_inicio.desc())).scalars().all()
-    return [dict(id=r.id, bloco=r.bloco, descricao=r.descricao, aliquota=float(r.aliquota),
-                 aliq_presumido=float(r.aliq_presumido), carga_efetiva=float(r.carga_efetiva),
-                 vigencia_inicio=r.vigencia_inicio, vigencia_fim=r.vigencia_fim,
-                 alterado_por=r.alterado_por, alterado_em=r.alterado_em) for r in linhas]
+    return [dict(id=r.id, ncm=r.ncm, ambito=r.ambito, bloco=r.bloco, descricao=r.descricao,
+                 aliquota=float(r.aliquota), aliq_presumido=float(r.aliq_presumido),
+                 carga_efetiva=float(r.carga_efetiva), vigencia_inicio=r.vigencia_inicio,
+                 vigencia_fim=r.vigencia_fim, alterado_por=r.alterado_por,
+                 alterado_em=r.alterado_em) for r in linhas]
 
 
 @router.post("/regras", status_code=201)
 def nova_regra(dados: RegraIn, db: Session = Depends(get_db),
                x_usuario: str = Header(default="fiscal")):
-    """Nova vigencia para um bloco: fecha a anterior no dia anterior e abre a nova.
+    """Nova vigencia para um NCM+ambito: fecha a anterior no dia anterior e abre a nova.
     A virada de fase do TTD e' um registro, nao uma alteracao no codigo."""
     atual = db.execute(
-        select(RegraTTD).where(RegraTTD.bloco == dados.bloco, RegraTTD.vigencia_fim.is_(None))
+        select(RegraTTD).where(RegraTTD.ncm == dados.ncm, RegraTTD.ambito == dados.ambito,
+                               RegraTTD.vigencia_fim.is_(None))
         .order_by(RegraTTD.vigencia_inicio.desc())).scalars().first()
     if atual and dados.vigencia_inicio <= atual.vigencia_inicio:
         raise HTTPException(400, detail=dict(
-            mensagem=(f"Já existe vigência do bloco {dados.bloco} a partir de "
+            mensagem=(f"Já existe vigência de {dados.ncm}/{dados.ambito} a partir de "
                       f"{atual.vigencia_inicio:%d/%m/%Y}. A nova precisa começar depois disso.")))
     if atual:
         atual.vigencia_fim = dados.vigencia_inicio - dt.timedelta(days=1)
@@ -99,4 +103,5 @@ def nova_regra(dados: RegraIn, db: Session = Depends(get_db),
                      antes=(dict(vigencia_fim=str(atual.vigencia_fim)) if atual else None),
                      depois=dados.model_dump(mode="json")))
     db.commit()
-    return dict(id=nova.id, bloco=nova.bloco, vigencia_inicio=nova.vigencia_inicio)
+    return dict(id=nova.id, ncm=nova.ncm, ambito=nova.ambito, bloco=nova.bloco,
+               vigencia_inicio=nova.vigencia_inicio)

@@ -27,7 +27,7 @@ from app.db import Base, SessionLocal, engine            # noqa: E402
 from app.models import (Auditoria, ConsumoEstoque, Excecao, Nota, NotaItem,  # noqa: E402
                         Parceiro, Produto)
 from app.services import estoque as est                  # noqa: E402
-from app.services.apuracao import semear_regras          # noqa: E402
+from app.services.apuracao import backfill_ncm_produtos, semear_regras  # noqa: E402
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 
@@ -147,6 +147,10 @@ def main():
 
         ids = db.execute(select(Produto.id)).scalars().all()
         est.recalcular_varios(db, ids, "migracao")
+        db.commit()
+
+        # NCM cadastral dos 6 produtos conhecidos - descritivo, nao mexe em bloco_ttd nem valor.
+        backfill_ncm_produtos(db)
         db.commit()
 
         n_notas = db.execute(select(Nota).where(Nota.natureza != "ACERTO")).scalars().all()

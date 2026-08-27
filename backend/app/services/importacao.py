@@ -19,13 +19,17 @@ from sqlalchemy.orm import Session
 
 from ..models import (ArquivoImportado, Configuracao, Excecao, LoteImportacao, Nota, NotaItem,
                       Parceiro, Produto)
+from . import apuracao as ap
 from . import estoque as est
 from . import fechamento as fec
 from .xml_nfe import NotaFiscal, XmlInvalido, evento_cancelamento, ler
 
 # CFOPs de devolucao de venda que voltam como entrada
 CFOP_DEVOLUCAO = {"1201", "1202", "1410", "1411", "2201", "2202", "2410", "2411"}
-ORIGEM_IMPORTADA = {"1", "2", "3", "6", "7", "8"}
+# Mercadoria importada, para efeito do TTD: so' orig 1 (importacao direta) e 6 (importacao com
+# industrializacao interna, sem similar nacional). Nao usar a lista mais larga de origens da
+# tabela de ICMS (2,3,7,8) - essa e' outra coisa, nao decide TTD.
+ORIGEM_IMPORTADA_TTD = {"1", "6"}
 
 
 def cnpj_empresa(db: Session) -> str | None:
@@ -74,36 +78,26 @@ class Resultado:
     nota_id: int | None = None
 
 
-def derivar_bloco(nf: NotaFiscal, item) -> tuple[str | None, str | None]:
-    """Deriva o bloco do TTD a partir do que ja' esta' no XML: CFOP, UF e aliquota.
-    Devolve (bloco, motivo_da_pendencia). Bloco None = fora do beneficio."""
-    cfop = (item.cfop or "").strip()
-    if not cfop:
-        return None, "Item sem CFOP"
-    if cfop.startswith("7"):
-        return None, None            # exportacao: fora do beneficio, entra so' no estoque
-    aliq = item.aliquota
-    if cfop.startswith("5"):
-        if aliq is not None and abs(aliq - 0.12) > 0.0001:
-            return "3", (f"CFOP {cfop} (interna) com aliquota de {aliq*100:.2f}% - a tabela do TTD "
-                         "usa 12% na operacao interna. Confira antes de apurar.")
-        return "3", None
-    if cfop.startswith("6"):
-        if aliq is not None and abs(aliq - 0.04) < 0.0001:
-            return "2", None
-        if aliq is not None and abs(aliq - 0.12) < 0.0001:
-            if item.origem in ORIGEM_IMPORTADA:
-                return "2", (f"Item com origem {item.origem} (importada) e aliquota de 12%. "
-                             "Mercadoria importada em operacao interestadual costuma ser 4%.")
-            return "1", None
-        if item.origem in ORIGEM_IMPORTADA:
-            return "2", (f"CFOP {cfop} com aliquota de "
-                         f"{'nao informada' if aliq is None else f'{aliq*100:.2f}%'} - "
-                         "classificado no bloco 2 pela origem do item. Confira.")
-        return "1", (f"CFOP {cfop} com aliquota de "
-                     f"{'nao informada' if aliq is None else f'{aliq*100:.2f}%'}, fora da tabela "
-                     "do TTD (4% ou 12%). Classificado no bloco 1 - confira.")
-    return None, None
+def derivar_bloco(db: Session, ncm: str | None, uf_contraparte: str | None, data: dt.date,
+                  aliquota_xml: float | None = None) -> tuple[str | None, str | None]:
+    """Deriva o bloco do TTD por produto (NCM) e ambito da operacao (interna em SC ou
+    interestadual) - nao mais por CFOP. CFOP continua decidindo so' a natureza (compra, venda,
+    devolucao, importacao), nao a aliquota.
+    Devolve (bloco, motivo_da_pendencia). Bloco None = fora do beneficio ou NCM sem regra."""
+    ncm = (ncm or "").strip()
+    if not ncm:
+        return None, "Item sem NCM"
+    if not ap.ncm_tem_regra(db, ncm, data):
+        return None, f"NCM {ncm} sem regra cadastrada de TTD"
+    ambito = "interna" if (uf_contraparte or "").upper() == "SC" else "interestadual"
+    r = ap.regra_produto(db, ncm, ambito, data)
+    if r is None:
+        return None, None      # NCM conhecido, mas sem beneficio neste ambito (ex.: cobre interno)
+    motivo = None
+    if aliquota_xml is not None and abs(float(aliquota_xml) - float(r.aliquota)) > 0.0001:
+        motivo = (f"Aliquota do XML ({float(aliquota_xml)*100:.2f}%) diverge da tabela do TTD "
+                 f"para NCM {ncm} {ambito} ({float(r.aliquota)*100:.2f}%). Apurado pela tabela.")
+    return r.bloco, motivo
 
 
 def _parceiro(db: Session, cnpj: str | None, nome: str | None, uf: str | None,
@@ -171,6 +165,11 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
         return Resultado("", "ignorada", f"Protocolo com cStat {nf.situacao} (nao autorizada)",
                          nf.chave, nf.numero)
 
+    if not any((item.origem or "") in ORIGEM_IMPORTADA_TTD for item in nf.itens):
+        return Resultado("", "ignorada",
+                         "Nenhum item com origem de mercadoria importada (orig 1 ou 6)",
+                         nf.chave, nf.numero)
+
     if nf.emit_cnpj == cnpj_nosso:
         tipo = "S" if nf.tipo_nf == "1" else "E"
         parceiro = _parceiro(db, nf.dest_cnpj, nf.dest_nome, nf.dest_uf, nf.dest_exterior,
@@ -189,6 +188,10 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
                     else "IMPORTACAO" if cfop.startswith("3") else "COMPRA")
     else:
         natureza = "DEVOLUCAO" if nf.finalidade == "4" else "VENDA"
+
+    # Contraparte da operacao (quem nao e' a gente nesta NF-e) decide o ambito interna/
+    # interestadual - vem do XML e, so' se faltar, do cadastro do parceiro.
+    uf_contraparte = (nf.dest_uf if tipo == "S" else nf.emit_uf) or (parceiro.uf if parceiro else None)
 
     try:
         fec.exigir_aberta(db, nf.data_emissao)
@@ -214,8 +217,14 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
         if aviso:
             pendencias.append(aviso)
         bloco = None
-        if tipo == "S" or natureza == "DEVOLUCAO":
-            bloco, motivo = derivar_bloco(nf, item)
+        origem_importada = (item.origem or "") in ORIGEM_IMPORTADA_TTD
+        if not origem_importada:
+            pendencias.append(
+                f"Item {item.numero}: origem {item.origem or 'nao informada'} nao e' mercadoria "
+                "importada (TTD exige orig 1 ou 6) - fora da apuracao do TTD.")
+        elif tipo == "S" or natureza == "DEVOLUCAO":
+            bloco, motivo = derivar_bloco(db, item.ncm, uf_contraparte, nf.data_emissao,
+                                          item.aliquota)
             if motivo:
                 pendencias.append(f"Item {item.numero}: {motivo}")
         db.add(NotaItem(nota_id=nota.id, produto_id=produto.id, ncm=item.ncm,

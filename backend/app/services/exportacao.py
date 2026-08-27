@@ -228,8 +228,8 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
     ws2 = wb.create_sheet("OPERAÇÕES ENTRADA IMPORTADO")
     for i, (h, w) in enumerate(zip(
             ["Emissão", "Entrada/Saída", "Número", "Série", "Modelo", "Razão Social", "CFOP",
-             "Total R$ NF", "Total QTD", "Produto", "Natureza"],
-            [12, 14, 10, 8, 8, 46, 8, 16, 14, 24, 14]), start=1):
+             "Total R$ NF", "Total QTD", "Produto", "Natureza", "NCM", "Orig+CST"],
+            [12, 14, 10, 8, 8, 46, 8, 16, 14, 24, 14, 12, 10]), start=1):
         c = ws2.cell(1, i, h)
         c.font = Font(bold=True, size=9)
         c.fill = PatternFill("solid", fgColor=CINZA)
@@ -252,6 +252,8 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
         ws2.cell(r, 9, float(item.quantidade or 0)).number_format = PESO
         ws2.cell(r, 10, item.produto.descricao)
         ws2.cell(r, 11, nota.natureza)
+        ws2.cell(r, 12, item.ncm)
+        ws2.cell(r, 13, item.cst_completo)
         r += 1
 
     ws3 = wb.create_sheet("ORIGEM DO ARQUIVO")

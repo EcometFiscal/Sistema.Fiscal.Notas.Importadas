@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from .config import APP_NAME, CORS_ORIGINS, CRIAR_TABELAS, SENHA_ACESSO, VERSION
 from .db import Base, SessionLocal, engine
 from .routers import apuracao, cadastros, estoque, exportacao, importacao, notas
-from .services.apuracao import semear_regras
+from .services.apuracao import backfill_ncm_produtos, semear_regras
 
 
 @asynccontextmanager
@@ -16,6 +16,7 @@ async def lifespan(_: FastAPI):
         Base.metadata.create_all(engine)
         with SessionLocal() as db:
             semear_regras(db)
+            backfill_ncm_produtos(db)
             db.commit()
     yield
 

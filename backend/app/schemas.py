@@ -60,6 +60,10 @@ class ItemOut(BaseModel):
     bloco_ttd: str | None = None
     custo_unit: float | None = None
     custo_total: float | None = None
+    ncm: str | None = None
+    origem_merc: str | None = None
+    cst: str | None = None
+    cst_completo: str | None = None     # origem + CST, ex. "100" - como o fiscal enxerga
 
 
 class NotaIn(BaseModel):
