@@ -1,0 +1,8 @@
+backend/tests
+backend/Dockerfile
+backend/.dockerignore
+frontend/Dockerfile
+frontend/nginx.conf
+docker-compose.yml
+planilhas
+backup

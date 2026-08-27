@@ -1,0 +1,62 @@
+name: testes
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lastro
+          POSTGRES_PASSWORD: lastro
+          POSTGRES_DB: lastro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lastro"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://lastro:lastro@localhost:5432/lastro
+      TEST_DATABASE_URL: postgresql+psycopg2://lastro:lastro@localhost:5432/lastro_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install -r backend/requirements.txt
+
+      - name: Confere que a aplicacao importa
+        run: cd backend && python -c "import app.main"
+
+      - name: Rodar testes
+        run: cd backend && python -m pytest tests -q
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependencias
+        run: cd frontend && npm ci
+
+      - name: Build
+        run: cd frontend && npm run build

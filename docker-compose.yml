@@ -1,0 +1,41 @@
+# Uso local, para desenvolver e rodar os testes sem depender da internet.
+# Em producao quem hospeda e' a Vercel (frontend + funcao Python) com banco no Supabase -
+# ver README. Este arquivo nao e' usado la'.
+services:
+  banco:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lastro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lastro}
+      POSTGRES_DB: ${POSTGRES_DB:-lastro}
+    volumes:
+      - dados:/var/lib/postgresql/data
+      - ./backup:/backup
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lastro}"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-lastro}:${POSTGRES_PASSWORD:-lastro}@banco:5432/${POSTGRES_DB:-lastro}
+    depends_on:
+      banco:
+        condition: service_healthy
+    volumes:
+      - ./planilhas:/planilhas:ro      # os dois arquivos originais, para a carga inicial
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    depends_on: [api]
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  dados:
