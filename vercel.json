@@ -4,7 +4,7 @@
   "outputDirectory": "frontend/dist",
   "installCommand": "echo sem instalacao na raiz",
   "functions": {
-    "api/index.py": { "runtime": "python3.12", "maxDuration": 60, "memory": 1024 }
+    "api/index.py": { "maxDuration": 60, "memory": 1024 }
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index" },
