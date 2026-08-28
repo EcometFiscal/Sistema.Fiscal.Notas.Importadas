@@ -124,6 +124,18 @@ def test_nota_mista_entra_mas_item_nao_importado_fica_fora_do_ttd(cliente, db):
     assert importado.bloco_ttd == "2" and nacional.bloco_ttd is None
 
 
+def test_cfop_3949_desdobramento_e_ignorado(cliente):
+    """A entrada de importado e' sempre CFOP 3102; o 3949 e' o desdobramento do mesmo lote em
+    NFs menores (mesma mercadoria, quantidade e valor ja contabilizados na 3102) - Victor,
+    28/08/2026. Importar as duas dobraria a entrada."""
+    lote = _sobe(cliente, {"a.xml": nfe(9611, cfop="3949", emit_cnpj="55555555000155",
+                                        dest_cnpj=CNPJ_EMPRESA, tipo_nf="1",
+                                        produto="SILICIO METALICO", ncm="28046900", data=ONTEM)})
+    arq = lote["arquivos"][0]
+    assert arq["situacao"] == "ignorada" and "3949" in arq["motivo"]
+    assert lote["importadas"] == 0 and lote["complementadas"] == 0
+
+
 def test_entrada_de_importacao(cliente, db):
     lote = _sobe(cliente, {"e.xml": nfe(8300, cfop="3102", emit_cnpj="55555555000155",
                                         dest_cnpj=CNPJ_EMPRESA, tipo_nf="1",
@@ -167,15 +179,31 @@ def test_xml_quebrado_nao_derruba_o_lote(cliente):
     assert lote["importadas"] == 1 and lote["erros"] == 1
 
 
-def test_produto_novo_vira_pendencia(cliente, db):
-    lote = _sobe(cliente, {"p.xml": nfe(8800, produto="LIGA DE ZINCO ESPECIAL", ncm="79011100",
-                                        data=HOJE)})
+def test_ncm_fora_do_ttd_e_ignorado_como_equipamento(cliente, db):
+    """NCM que nao e' nenhuma das 6 sucatas do TTD (ex.: equipamento importado com origem 1,
+    como a prensa hidraulica da NF 6532/julho-2026) - a nota inteira e' ignorada, nao vira
+    produto novo no cadastro nem pendencia (Victor, 28/08/2026)."""
+    lote = _sobe(cliente, {"p.xml": nfe(8800, produto="PRENSA HIDRAULICA IMPORTADA",
+                                        ncm="84623900", data=HOJE)})
+    arq = lote["arquivos"][0]
+    assert arq["situacao"] == "ignorada" and "NCM" in arq["motivo"]
+    assert lote["importadas"] == 0 and lote["pendentes"] == 0
+    assert not db.execute(select(Produto)
+                          .where(Produto.descricao == "PRENSA HIDRAULICA IMPORTADA")
+                          ).scalars().first()
+
+
+def test_produto_com_descricao_nova_mas_ncm_conhecido_casa_pelo_ncm(cliente, db):
+    """NCM de uma das 6 sucatas do TTD, mas descricao diferente da canonica no XML - entra,
+    casa pelo NCM com o produto ja cadastrado e vira pendencia pra confirmar; nao cria produto
+    novo, porque o NCM ja e' conhecido."""
+    lote = _sobe(cliente, {"p.xml": nfe(8801, produto="SUCATA DE COBRE MISTA",
+                                        ncm="74040000", data=HOJE)})
     assert lote["pendentes"] == 1
-    assert db.execute(select(Produto)
-                      .where(Produto.descricao == "LIGA DE ZINCO ESPECIAL")).scalars().first()
     exc = db.execute(select(Excecao).where(Excecao.tipo == "importacao_xml")).scalars().all()
-    assert any("não existia no cadastro" in e.descricao or "nao existia" in e.descricao
-               for e in exc)
+    assert any("casado" in e.descricao and "NCM" in e.descricao for e in exc)
+    assert not db.execute(select(Produto)
+                          .where(Produto.descricao == "SUCATA DE COBRE MISTA")).scalars().first()
 
 
 def test_xml_preenche_o_cnpj_que_a_planilha_nao_tinha(cliente, db):
@@ -294,6 +322,47 @@ def test_duas_candidatas_historicas_viram_pendencia_sem_escolha(cliente, db):
     assert len(todas) == 2                                        # nao criou uma terceira
     exc = db.execute(select(Excecao).where(Excecao.tipo == "casamento_ambiguo")).scalars().all()
     assert any(str(h1.id) in e.descricao and str(h2.id) in e.descricao for e in exc)
+
+
+def test_granularidade_do_lote_no_xml_nao_importa_pra_casar(cliente, db):
+    """Historico agregado (1 item, 1.350 kg) casa com XML detalhado em 2 lotes do mesmo produto
+    que somam 1.350 kg - a granularidade do lote no XML nao importa (Victor, 28/08/2026)."""
+    hist = _nota_migrada(db, numero=9606, data=HOJE, valor=27000.0, quantidade=1350.0,
+                         produto="SUCATA DE COBRE")
+    xml = nfe(9606, data=HOJE, produto="SUCATA DE COBRE", ncm="74040000", dest_uf="SP",
+             cfop="6101", aliquota=12.0, origem="6", quantidade=1000.0, valor=20000.0)
+    xml_2lotes = xml.replace(
+        '<det nItem="1">',
+        '<det nItem="2"><prod><cProd>002</cProd><xProd>SUCATA DE COBRE</xProd>'
+        '<NCM>74040000</NCM><CFOP>6101</CFOP><uCom>KG</uCom><qCom>350.0000</qCom>'
+        '<vUnCom>20.000000</vUnCom><vProd>7000.00</vProd></prod>'
+        '<imposto><ICMS><ICMS00><orig>6</orig><CST>00</CST><modBC>3</modBC>'
+        '<vBC>7000.00</vBC><pICMS>12.00</pICMS><vICMS>840.00</vICMS></ICMS00></ICMS></imposto>'
+        '</det><det nItem="1">').replace('<vNF>20000.00</vNF>', '<vNF>27000.00</vNF>')
+    lote = _sobe(cliente, {"a.xml": xml_2lotes})
+    assert lote["complementadas"] == 1 and lote["pendentes"] == 0
+    db.refresh(hist)
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == hist.id)).scalars().one()
+    assert float(item.quantidade) == pytest.approx(1350.0)         # nunca mudou
+    assert item.bloco_ttd == "1" and item.ncm == "74040000"
+
+
+def test_quantidade_bate_mas_produto_diverge_da_planilha_segue_o_xml(cliente, db):
+    """Mesma quantidade, produto diferente entre planilha e XML: o XML manda (Victor,
+    28/08/2026) - complementa corrigindo o produto e abre pendencia informativa, nunca muda a
+    quantidade."""
+    hist = _nota_migrada(db, numero=9607, data=HOJE, valor=16500.0, quantidade=500.0,
+                         produto="SUCATA DE MAGNESIO")
+    lote = _sobe(cliente, {"a.xml": nfe(9607, data=HOJE, produto="LINGOTE DE MAGNESIO",
+                                        ncm="81041100", quantidade=500.0, valor=16500.0,
+                                        dest_uf="SP", cfop="6101", aliquota=4.0, origem="6")})
+    assert lote["complementadas"] == 0 and lote["pendentes"] == 1
+    db.refresh(hist)
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == hist.id)).scalars().one()
+    assert db.get(Produto, item.produto_id).descricao == "LINGOTE DE MAGNESIO"
+    assert float(item.quantidade) == pytest.approx(500.0)          # quantidade nunca mudou
+    exc = db.execute(select(Excecao).where(Excecao.nota_id == hist.id)).scalars().all()
+    assert any("corrigido conforme o XML" in e.descricao for e in exc)
 
 
 def test_nota_sem_historico_correspondente_continua_entrando_como_nova(cliente, db):

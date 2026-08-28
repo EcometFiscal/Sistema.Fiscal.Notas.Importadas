@@ -123,9 +123,19 @@ Do XML sai tudo o mais que a planilha pedia à mão:
 | NCM e origem | Campos nomeados do item |
 | CNPJ dos parceiros | Preenche sozinho os 60 que vieram da planilha sem CNPJ |
 | Cancelamento | Evento 110111 dentro do pacote cancela a nota e refaz o custeio |
+| CFOP 3949 | Ignorado: é o desdobramento de uma NF de importação (CFOP 3102) em lotes menores — mesma mercadoria já contabilizada pela 3102, importar as duas dobraria a entrada |
+| NCM fora da tabela do TTD | Nota inteira ignorada — é equipamento ou mercadoria fora do escopo do Lastro, mesmo vindo com origem de mercadoria importada; não vira produto novo no cadastro |
 
 O que não encaixa na tabela do TTD vira **pendência com o motivo escrito** — não vira palpite.
 Nenhum valor fiscal é lido de PDF.
+
+Se o XML casar com uma nota que veio da planilha (sem chave de acesso — tipo, número, série e
+data batendo), ele **complementa** em vez de duplicar: grava a chave, o CFOP, a natureza e, por
+item, NCM/origem/alíquota/CST/bloco. Quantidade e valor são intocáveis — vieram da planilha e são
+o que vale. A granularidade do lote no XML não importa — vários lotes do mesmo produto se somam
+pra casar com o item único que a planilha registrou — e se o produto do XML divergir do que a
+planilha tinha (mesma quantidade), o XML manda: a planilha é quem estava errada. Mais de uma nota
+candidata não é escolhida sozinha; vira pendência.
 
 Quando houver acesso à máquina que enxerga a pasta de rede, `scripts/pasta_vigiada.py` faz a
 mesma coisa sem upload manual.

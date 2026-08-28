@@ -30,6 +30,16 @@ CFOP_DEVOLUCAO = {"1201", "1202", "1410", "1411", "2201", "2202", "2410", "2411"
 # industrializacao interna, sem similar nacional). Nao usar a lista mais larga de origens da
 # tabela de ICMS (2,3,7,8) - essa e' outra coisa, nao decide TTD.
 ORIGEM_IMPORTADA_TTD = {"1", "6"}
+# A entrada de mercadoria importada e' sempre CFOP 3102 (Victor, 28/08/2026). O sistema do
+# Victor emite, alem dela, uma NF por lote com CFOP 3949 para cada desdobramento fisico do
+# mesmo lote (referenciando a 3102 original em NFref) - mesma mercadoria, mesma quantidade
+# somada, mesmo valor somado. Importar as duas dobraria a entrada.
+CFOP_DESDOBRAMENTO_IGNORAR = "3949"
+# NCM da sucata metalica que o TTD cobre - fora dessa lista e' equipamento ou mercadoria fora
+# do escopo do Lastro (ex.: prensa hidraulica importada com origem 1, NF 6532/julho-2026), mesmo
+# que o item tenha origem de mercadoria importada. Victor, 28/08/2026: ignorar a nota inteira,
+# nao criar produto novo pra isso no cadastro.
+NCM_METAL_CONHECIDO = set(ap.PRODUTO_NCM.values())
 
 
 def cnpj_empresa(db: Session) -> str | None:
@@ -190,14 +200,35 @@ def _dados_fiscais_item(db: Session, item, tipo: str, natureza: str, uf_contrapa
     return produto, bloco, pendencias
 
 
-def _casar_item_historico(nota: Nota, produto_id: int, quantidade: float,
-                          usados: set[int]) -> NotaItem | None:
-    """Casa um item do XML com um item da nota migrada pelo produto e pela quantidade (a
-    planilha nao tem chave de item nenhuma). Ambiguo (0 ou mais de 1) vira pendencia, nunca
-    escolha no escuro."""
-    candidatos = [i for i in nota.itens if i.id not in usados and i.produto_id == produto_id
-                 and abs(float(i.quantidade) - quantidade) <= 0.001]
-    return candidatos[0] if len(candidatos) == 1 else None
+def _agrupar_itens_por_produto(db: Session, nf: NotaFiscal, tipo: str, natureza: str,
+                               uf_contraparte: str | None) -> tuple[dict[int, dict], list[str]]:
+    """Agrupa os itens do XML pelo produto que _dados_fiscais_item resolve. A granularidade do
+    lote no XML nao importa pra casar com a nota migrada (a planilha so' tem um item por
+    produto) - Victor, 28/08/2026. Produto/NCM/origem/aliquota/CST/bloco inconsistentes entre
+    lotes do mesmo produto viram pendencia, nunca escolha no escuro."""
+    grupos: dict[int, dict] = {}
+    pendencias: list[str] = []
+    for item in nf.itens:
+        produto, bloco, avisos = _dados_fiscais_item(db, item, tipo, natureza, uf_contraparte,
+                                                      nf.data_emissao)
+        pendencias.extend(avisos)
+        fiscal = (item.ncm, item.origem, item.aliquota, item.cst, bloco)
+        g = grupos.get(produto.id)
+        if g is None:
+            grupos[produto.id] = dict(produto=produto, quantidade=item.quantidade,
+                                      fiscal=fiscal, consistente=True, numeros=[item.numero])
+        else:
+            g["quantidade"] += item.quantidade
+            g["numeros"].append(item.numero)
+            if g["fiscal"] != fiscal:
+                g["consistente"] = False
+    for g in grupos.values():
+        if not g["consistente"]:
+            pendencias.append(
+                f"Itens {g['numeros']} do XML sao do mesmo produto ({g['produto'].descricao}) "
+                "mas com NCM/origem/aliquota/CST/bloco diferentes entre os lotes - confira "
+                "manualmente, nao gravado.")
+    return grupos, pendencias
 
 
 def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, natureza: str,
@@ -224,20 +255,37 @@ def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, n
         if uf_contraparte and not nota.parceiro.uf:
             nota.parceiro.uf = uf_contraparte
 
+    grupos, avisos = _agrupar_itens_por_produto(db, nf, nota.tipo, natureza, uf_contraparte)
+    pendencias.extend(avisos)
+
     usados: set[int] = set()
-    for item in nf.itens:
-        produto, bloco, avisos = _dados_fiscais_item(db, item, nota.tipo, natureza,
-                                                      uf_contraparte, nota.data_mov)
-        alvo = _casar_item_historico(nota, produto.id, item.quantidade, usados)
-        if alvo is None:
+    for produto_id, g in grupos.items():
+        if not g["consistente"]:
+            continue                                    # ja' virou pendencia, nao grava no escuro
+        candidatos = [i for i in nota.itens if i.id not in usados
+                     and abs(float(i.quantidade) - g["quantidade"]) <= 0.001]
+        if len(candidatos) != 1:
             pendencias.append(
-                f"Item {item.numero} do XML ({produto.descricao}, {item.quantidade:,.1f} kg) nao "
-                f"foi casado com nenhum item da NF {nota.numero} migrada - confira manualmente.")
+                (f"{g['produto'].descricao} do XML ({g['quantidade']:,.1f} kg) nao foi casado "
+                 f"com nenhum item da NF {nota.numero} migrada - confira manualmente."
+                 if not candidatos else
+                 f"{g['produto'].descricao} do XML ({g['quantidade']:,.1f} kg) bate com "
+                 f"{len(candidatos)} itens da NF {nota.numero} migrada - nao escolhido "
+                 "automaticamente."))
             continue
+        alvo = candidatos[0]
         usados.add(alvo.id)
-        alvo.ncm, alvo.origem_merc, alvo.aliquota = item.ncm, item.origem, item.aliquota
-        alvo.cst, alvo.bloco_ttd = item.cst, bloco
-        pendencias.extend(avisos)
+        if alvo.produto_id != produto_id:
+            # A quantidade bate mas o produto da planilha diverge do XML: o XML manda (Victor,
+            # 28/08/2026) - a planilha e' quem estava errada, nao o XML.
+            pendencias.append(
+                f"Produto do item da NF {nota.numero} corrigido conforme o XML: estava "
+                f"'{alvo.produto.descricao}', o XML diz '{g['produto'].descricao}' (mesma "
+                f"quantidade, {g['quantidade']:,.1f} kg).")
+            alvo.produto_id = produto_id
+        ncm, origem, aliquota, cst, bloco = g["fiscal"]
+        alvo.ncm, alvo.origem_merc, alvo.aliquota = ncm, origem, aliquota
+        alvo.cst, alvo.bloco_ttd = cst, bloco
 
     db.flush()
     for p in pendencias:
@@ -262,10 +310,20 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
         return Resultado("", "ignorada", f"Protocolo com cStat {nf.situacao} (nao autorizada)",
                          nf.chave, nf.numero)
 
+    if nf.cfop_principal == CFOP_DESDOBRAMENTO_IGNORAR:
+        return Resultado("", "ignorada", (
+            "CFOP 3949: desdobramento de uma NF-e de importacao (CFOP 3102) ja contabilizada "
+            "por ela mesma - ignorada para nao duplicar a entrada."), nf.chave, nf.numero)
+
     if not any((item.origem or "") in ORIGEM_IMPORTADA_TTD for item in nf.itens):
         return Resultado("", "ignorada",
                          "Nenhum item com origem de mercadoria importada (orig 1 ou 6)",
                          nf.chave, nf.numero)
+
+    if not any((item.ncm or "") in NCM_METAL_CONHECIDO for item in nf.itens):
+        return Resultado("", "ignorada", (
+            "Nenhum item com NCM de sucata metalica do TTD - nota de equipamento ou mercadoria "
+            "fora do escopo do sistema, ignorada."), nf.chave, nf.numero)
 
     if nf.emit_cnpj == cnpj_nosso:
         tipo = "S" if nf.tipo_nf == "1" else "E"
