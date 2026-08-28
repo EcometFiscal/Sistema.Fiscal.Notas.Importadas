@@ -1,9 +1,11 @@
 """Modelo de dados do Lastro.
 
-Fase 2. Duas decisoes de 27/08/2026 estao embutidas aqui e mudam o significado das tabelas:
-  - decisao 5: a saida NAO e' vinculada a uma entrada especifica. ConsumoEstoque e' o razao
-    de CUSTEIO (PEPS), nao prova de vinculacao fiscal. origem_merc segue nulo ate' o XML.
-  - decisao 1: saida sem saldo gera lancamento de acerto datado, nunca saldo negativo.
+Fase 2. Decisoes que mudam o significado das tabelas:
+  - decisao 5 (27/08/2026): a saida NAO e' vinculada a uma entrada especifica. ConsumoEstoque
+    e' o razao de CUSTEIO (PEPS), nao prova de vinculacao fiscal. origem_merc segue nulo ate'
+    o XML.
+  - decisao 1 (27/08/2026, REVERTIDA em 30/08/2026): saida sem saldo NAO gera mais lancamento
+    de acerto - o saldo do produto fica negativo ate' uma entrada real cobrir a diferenca.
 """
 import datetime as dt
 

@@ -4,7 +4,7 @@ import datetime as dt
 import pytest
 from sqlalchemy import select
 
-from app.models import Excecao, Nota, NotaItem, Produto
+from app.models import Excecao, Nota, Produto
 from app.services import estoque as est
 
 HOJE = dt.date.today()
@@ -64,13 +64,11 @@ def test_saida_sem_saldo_exige_justificativa(cliente, db):
     exc = db.execute(select(Excecao).where(Excecao.nota_id == nota_id,
                                            Excecao.tipo == "saida_sem_saldo")).scalars().all()
     assert len(exc) == 1 and exc[0].justificativa.startswith("Entrada de importacao")
-    # decisao 1: o acerto entra na mesma data e o saldo nao fica negativo
-    assert float(est.saldo(db, p.id)) >= -0.5
-    acertos = db.execute(
-        select(Nota).join(NotaItem, NotaItem.nota_id == Nota.id)
-        .where(Nota.natureza == "ACERTO", Nota.data_mov == HOJE,
-               NotaItem.produto_id == p.id)).scalars().all()
-    assert acertos
+
+    # Decisao de 30/08/2026: sem acerto - o saldo do produto fica negativo mesmo.
+    assert float(est.saldo(db, p.id)) < 0
+    acertos = db.execute(select(Nota).where(Nota.natureza == "ACERTO")).scalars().all()
+    assert not acertos
 
 
 def test_duplicata_exige_confirmacao(cliente):

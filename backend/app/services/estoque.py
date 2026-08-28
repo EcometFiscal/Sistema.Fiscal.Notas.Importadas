@@ -1,9 +1,13 @@
-"""Saldo, custeio PEPS e acerto automatico.
+"""Saldo e custeio PEPS.
 
 Decisao 5: o controle e' pelo SALDO do produto. Nao existe vinculo fiscal entre a nota de
 saida e uma nota de entrada especifica - o PEPS roda aqui apenas para custear o estoque.
-Decisao 1: quando uma saida excede o saldo, um lancamento de acerto e' criado NA DATA da
-saida. O saldo nunca fica negativo em nenhum ponto da linha do tempo.
+Decisao 1 de 27/08/2026 (saida sem saldo gera lancamento de acerto, saldo nunca fica negativo)
+foi REVERTIDA em 30/08/2026 a pedido do Victor: o sistema nao lanca mais acerto de estoque.
+Quando uma saida excede o saldo, o saldo do produto fica negativo dali em diante - mas o custo
+da parte sem lastro continua estimado e contabilizado (ver custo_estimado()), so' que direto no
+NotaItem.custo_total da propria saida, sem nota fake nem ConsumoEstoque apontando pra lote que
+nao existe.
 """
 from __future__ import annotations
 
@@ -86,7 +90,10 @@ def _limpar_custeio(db: Session, produto_id: int):
         db.execute(delete(Excecao).where(Excecao.nota_id.in_(acertos)))
         db.execute(delete(NotaItem).where(NotaItem.nota_id.in_(acertos)))
         db.execute(delete(Nota).where(Nota.id.in_(acertos)))
-    db.execute(delete(Excecao).where(and_(Excecao.tipo == "acerto_automatico",
+    # "acerto_automatico" e' o tipo antigo (decisao revertida em 30/08/2026) - o filtro cobre os
+    # dois nomes pra limpar o que ja existia na migracao E nao empilhar "saldo_negativo"
+    # duplicado toda vez que o recalculo roda de novo (a cada nota nova, cancelamento, etc.).
+    db.execute(delete(Excecao).where(and_(Excecao.tipo.in_(("acerto_automatico", "saldo_negativo")),
                                           Excecao.produto_id == produto_id)))
     db.flush()
 
@@ -95,7 +102,7 @@ def recalcular_custeio(db: Session, produto_id: int, usuario: str = "sistema") -
     """Refaz o PEPS do produto inteiro. Idempotente: rodar duas vezes da' o mesmo resultado."""
     _limpar_custeio(db, produto_id)
     lotes: list[list] = []          # [item_entrada_id, qtd_restante, custo]
-    acertos, consumos = 0, 0
+    negativos, consumos = 0, 0
     for item, nota in movimentos(db, produto_id):
         qtd = _d(item.quantidade)
         if nota.tipo == "E":
@@ -117,33 +124,24 @@ def recalcular_custeio(db: Session, produto_id: int, usuario: str = "sistema") -
             if lote[1] <= EPS:
                 lotes.pop(0)
         if restante > EPS:
+            # Decisao de 30/08/2026: nao cria mais lote fake (nota ACERTO) pra cobrir a
+            # diferenca. O saldo do produto fica negativo dali em diante - so' o custo da parte
+            # sem lastro continua estimado e vai direto no custo_total da propria saida.
             custo = custo_estimado(db, produto_id, nota.data_mov)
-            ac = Nota(numero=0, tipo="E", natureza="ACERTO", data_emissao=nota.data_mov,
-                      data_mov=nota.data_mov, valor_total=float(restante * custo),
-                      status="lancada", criado_por=usuario,
-                      origem_registro=f"acerto automatico para a saida NF {nota.numero}")
-            db.add(ac)
-            db.flush()
-            it = NotaItem(nota_id=ac.id, produto_id=produto_id, quantidade=float(restante),
-                          valor=float(restante * custo), custo_unit=float(custo))
-            db.add(it)
-            db.flush()
-            db.add(ConsumoEstoque(item_saida_id=item.id, item_entrada_id=it.id,
-                                  produto_id=produto_id, quantidade=float(restante),
-                                  custo_unitario=float(custo), metodo="ACERTO"))
-            db.add(Excecao(tipo="acerto_automatico", nota_id=ac.id, produto_id=produto_id,
+            custo_total += restante * custo
+            db.add(Excecao(tipo="saldo_negativo", nota_id=nota.id, produto_id=produto_id,
                            quantidade=float(restante), valor=float(restante * custo),
                            criado_por=usuario,
                            descricao=(f"Saída NF {nota.numero} de "
                                       f"{nota.data_mov:%d/%m/%Y} excedeu o saldo em "
-                                      f"{float(restante):.1f} kg. Acerto lançado na mesma data a "
-                                      f"custo estimado de R$ {float(custo):.4f}/kg "
-                                      "(decisão 1 de 27/08/2026).")))
-            custo_total += restante * custo
-            acertos += 1
+                                      f"{float(restante):.1f} kg. Custo estimado em R$ "
+                                      f"{float(custo):.4f}/kg. Saldo do produto fica negativo "
+                                      "até uma entrada real cobrir a diferença "
+                                      "(decisão de 30/08/2026).")))
+            negativos += 1
         item.custo_total = float(custo_total)
     db.flush()
-    return dict(produto_id=produto_id, consumos=consumos, acertos=acertos)
+    return dict(produto_id=produto_id, consumos=consumos, negativos=negativos)
 
 
 def recalcular_varios(db: Session, produto_ids: Iterable[int], usuario: str = "sistema"):
@@ -151,28 +149,37 @@ def recalcular_varios(db: Session, produto_ids: Iterable[int], usuario: str = "s
 
 
 def posicao(db: Session, ate: dt.date | None = None) -> list[dict]:
-    """Saldo em kg e em R$ por produto. O valor vem dos lotes ainda nao consumidos."""
+    """Saldo em kg e em R$ por produto. O valor vem dos lotes ainda nao consumidos - e quando a
+    saida excede os lotes disponiveis (saldo negativo), o excedente entra pelo custo estimado,
+    senao o valor ficaria subestimado exatamente onde o saldo fica negativo (decisao de
+    30/08/2026: nao ha' mais lote fake de acerto pra "fechar a conta" sozinho)."""
     out = []
     for produto in db.execute(select(Produto).order_by(Produto.descricao)).scalars():
         lotes: list[list] = []
         saldo_kg = ZERO
+        valor = ZERO
         for item, nota in movimentos(db, produto.id, ate):
             qtd = _d(item.quantidade)
             if nota.tipo == "E":
                 saldo_kg += qtd
                 if qtd > 0:
-                    lotes.append([qtd, _d(item.custo_unit) if item.custo_unit is not None
-                                  else (_d(item.valor) / qtd if item.valor else ZERO)])
+                    custo = _d(item.custo_unit) if item.custo_unit is not None \
+                        else (_d(item.valor) / qtd if item.valor else ZERO)
+                    lotes.append([qtd, custo])
+                    valor += qtd * custo
             else:
                 saldo_kg -= qtd
                 restante = qtd
                 while restante > EPS and lotes:
                     usa = min(restante, lotes[0][0])
+                    valor -= usa * lotes[0][1]
                     lotes[0][0] -= usa
                     restante -= usa
                     if lotes[0][0] <= EPS:
                         lotes.pop(0)
-        valor = sum(q * c for q, c in lotes)
+                if restante > EPS:
+                    custo = custo_estimado(db, produto.id, nota.data_mov)
+                    valor -= restante * custo
         out.append(dict(produto_id=produto.id, produto=produto.descricao, unidade=produto.unidade,
                         saldo_kg=float(saldo_kg), saldo_rs=float(valor),
                         custo_medio=float(valor / saldo_kg) if saldo_kg > 0 else None))

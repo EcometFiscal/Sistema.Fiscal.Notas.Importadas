@@ -97,8 +97,8 @@ def criar_nota(db: Session, dados: NotaIn, usuario: str = "sistema") -> tuple[No
                     exige=None if dados.justificativa else "justificativa",
                     mensagem=(f"{produto.descricao}: saldo de {br(float(disponivel))} kg em "
                               f"{dados.data_mov:%d/%m/%Y} e a saída é de {br(item.quantidade)} kg. "
-                              f"Faltam {br(falta)} kg. Grave com justificativa e um acerto será "
-                              "lançado na mesma data."),
+                              f"Faltam {br(falta)} kg. Grave com justificativa; o saldo do "
+                              "produto ficará negativo até uma entrada real cobrir a diferença."),
                     dados=dict(produto_id=produto.id, produto=produto.descricao,
                                saldo=float(disponivel), falta=falta)))
 

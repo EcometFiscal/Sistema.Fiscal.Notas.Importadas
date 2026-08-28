@@ -16,7 +16,11 @@ PAINEL = {
     "SUCATA DE COBRE": 180091.5,
     "SUCATA DE MAGNESIO": 7026.0,     # a planilha perde 41.528,4 kg gravados com acento
 }
-ACERTOS_ESPERADOS = 24960.0 + 28059.5   # decisao 1: o que saiu sem saldo virou acerto datado
+ACERTOS_ESPERADOS = 24960.0 + 28059.5   # decisao 1 (revertida 30/08/2026): os dois pontos onde
+                                        # a decisao antiga teria lancado acerto - agora ficam
+                                        # negativos em vez disso. Produto 1 = LINGOTE DE ALUMINIO
+                                        # (NF 596 + NF 640, dez/2020), produto 4 = SUCATA DE
+                                        # ALUMINIO (NF 2050 + NF 2111, set/2022).
 
 
 def _saldo_planilha(db, produto_id):
@@ -46,31 +50,37 @@ def test_saldo_por_produto_bate_com_o_painel(db):
     assert not divergentes, divergentes
 
 
-def test_nenhum_saldo_negativo_em_nenhuma_data(db):
-    """Decisao 1: o acerto datado tem que impedir o negativo em toda a linha do tempo."""
-    for produto in db.execute(select(Produto)).scalars():
-        for linha in est.razao(db, produto.id):
-            assert linha["saldo"] >= -0.5, (produto.descricao, linha["data"], linha["saldo"])
+def test_saldo_fica_negativo_onde_antes_tinha_acerto(db):
+    """Decisao de 30/08/2026: sem acerto datado, os dois pontos onde a saida excedeu o saldo
+    (dez/2020 no Lingote de Aluminio, set/2022 na Sucata de Aluminio) ficam negativos na linha
+    do tempo em vez de serem tapados por um lancamento fake."""
+    linhas1 = est.razao(db, 1, de=dt.date(2020, 11, 1), ate=dt.date(2020, 12, 31))
+    minimo1 = min(l["saldo"] for l in linhas1)
+    assert abs(minimo1 - (-24960.0)) < 0.5, minimo1     # LINGOTE DE ALUMINIO, NF 596 + NF 640
+
+    linhas4 = est.razao(db, 4, de=dt.date(2022, 9, 1), ate=dt.date(2022, 9, 30))
+    minimo4 = min(l["saldo"] for l in linhas4)
+    assert abs(minimo4 - (-28059.5)) < 0.5, minimo4     # SUCATA DE ALUMINIO, NF 2050 + NF 2111
 
 
-def test_total_de_acertos_gerados(db):
-    total = 0.0
-    for produto in db.execute(select(Produto)).scalars():
-        total += sum(
-            float(i.quantidade) for i, n in db.execute(
-                select(NotaItem, Nota).join(Nota, Nota.id == NotaItem.nota_id)
-                .where(NotaItem.produto_id == produto.id, Nota.natureza == "ACERTO")).all())
-    assert abs(total - ACERTOS_ESPERADOS) < 0.5
+def test_nenhuma_nota_acerto_e_criada(db):
+    """Decisao de 30/08/2026: nao existe mais nota natureza=='ACERTO' - o saldo fica negativo em
+    vez de ganhar um lote fake pra cobrir a diferenca."""
+    acertos = db.execute(select(Nota).where(Nota.natureza == "ACERTO")).scalars().all()
+    assert not acertos
 
 
 def test_estoque_valorizado(db):
     pos = est.posicao(db)
-    assert abs(sum(p["saldo_kg"] for p in pos) - 2137609.0) < 1
+    # 2.137.609,0 kg de quando a decisao 1 ainda tapava os dois pontos negativos com acerto,
+    # menos os 53.019,5 kg (24.960,0 + 28.059,5) que eram lote fake e deixaram de existir.
+    assert abs(sum(p["saldo_kg"] for p in pos) - (2137609.0 - ACERTOS_ESPERADOS)) < 1
     assert sum(p["saldo_rs"] for p in pos) > 0
     for p in pos:
-        assert p["saldo_kg"] >= 0
         if p["saldo_kg"] > 0:
             assert p["custo_medio"] and p["custo_medio"] > 0
+        else:
+            assert p["custo_medio"] is None    # saldo <= 0 nao tem custo medio por kg positivo
 
 
 def test_recalculo_e_idempotente(db):

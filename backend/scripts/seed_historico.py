@@ -154,11 +154,15 @@ def main():
         db.commit()
 
         n_notas = db.execute(select(Nota).where(Nota.natureza != "ACERTO")).scalars().all()
-        acertos = db.execute(select(Nota).where(Nota.natureza == "ACERTO")).scalars().all()
         pos = est.posicao(db)
+        negativos = [p for p in pos if p["saldo_kg"] < 0]
         print(f"parceiros: {len(db.execute(select(Parceiro)).scalars().all())}")
         print(f"produtos : {len(ids)}")
-        print(f"notas    : {len(n_notas)} (+{len(acertos)} acertos gerados pelo custeio)")
+        print(f"notas    : {len(n_notas)}")
+        if negativos:
+            print(f"aviso    : {len(negativos)} produto(s) com saldo negativo (decisao de "
+                 f"30/08/2026 - nao gera mais acerto): "
+                 + ", ".join(f"{p['produto']} ({p['saldo_kg']:,.1f} kg)" for p in negativos))
         print(f"pendencia: {len(sem_data)} lancamento(s) sem data ficaram em excecoes")
         print(f"estoque  : {sum(p['saldo_kg'] for p in pos):,.1f} kg | "
               f"R$ {sum(p['saldo_rs'] for p in pos):,.2f}")
