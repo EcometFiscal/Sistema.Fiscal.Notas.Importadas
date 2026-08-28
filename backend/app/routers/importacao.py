@@ -42,7 +42,8 @@ async def importar_zip(arquivo: UploadFile = File(...), db: Session = Depends(ge
 
 def _lote_json(lote: LoteImportacao) -> dict:
     return dict(id=lote.id, origem=lote.origem, nome=lote.nome, total=lote.total,
-                importadas=lote.importadas, duplicadas=lote.duplicadas, pendentes=lote.pendentes,
+                importadas=lote.importadas, complementadas=lote.complementadas,
+                duplicadas=lote.duplicadas, pendentes=lote.pendentes,
                 erros=lote.erros, criado_em=lote.criado_em, criado_por=lote.criado_por,
                 arquivos=[dict(arquivo=a.arquivo, situacao=a.situacao, motivo=a.motivo,
                                chave_acesso=a.chave_acesso, numero=a.numero, tipo=a.tipo,
@@ -55,8 +56,8 @@ def lotes(limite: int = 30, db: Session = Depends(get_db)):
     linhas = db.execute(select(LoteImportacao).order_by(LoteImportacao.id.desc())
                         .limit(limite)).scalars().all()
     return [dict(id=l.id, origem=l.origem, nome=l.nome, total=l.total, importadas=l.importadas,
-                 duplicadas=l.duplicadas, pendentes=l.pendentes, erros=l.erros,
-                 criado_em=l.criado_em, criado_por=l.criado_por) for l in linhas]
+                 complementadas=l.complementadas, duplicadas=l.duplicadas, pendentes=l.pendentes,
+                 erros=l.erros, criado_em=l.criado_em, criado_por=l.criado_por) for l in linhas]
 
 
 @router.get("/importar/lotes/{lote_id}")

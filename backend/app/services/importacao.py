@@ -151,6 +151,103 @@ def _produto(db: Session, descricao: str, ncm: str | None) -> tuple[Produto, str
                f"(NCM {ncm or 'nao informado'}). Confirme antes de apurar.")
 
 
+TOLERANCIA_CENTAVOS = 0.01
+
+
+def _valor_compativel(a: float | None, b: float | None) -> bool:
+    return a is not None and b is not None and abs(float(a) - float(b)) <= TOLERANCIA_CENTAVOS
+
+
+def buscar_candidatas_historico(db: Session, nf: NotaFiscal, tipo: str) -> list[Nota]:
+    """Casa o XML com uma nota migrada da planilha (sem chave de acesso, porque a planilha
+    nunca teve esse campo) pelo tipo, numero, serie e data_mov. Sem isto, importar hoje o XML
+    de um mes ja' migrado duplicaria tudo: a deduplicacao normal (por chave_acesso) nao teria
+    nada pra comparar, porque a nota migrada nao tem chave."""
+    return db.execute(
+        select(Nota).where(Nota.chave_acesso.is_(None), Nota.tipo == tipo,
+                           Nota.numero == nf.numero, Nota.serie == (nf.serie or "1"),
+                           Nota.data_mov == nf.data_emissao)
+    ).scalars().all()
+
+
+def _dados_fiscais_item(db: Session, item, tipo: str, natureza: str, uf_contraparte: str | None,
+                        data: dt.date) -> tuple[Produto, str | None, list[str]]:
+    """Produto, bloco do TTD e pendencias de um item do XML. Usada tanto para nota nova quanto
+    para complementar uma nota migrada - as duas trilhas nunca podem divergir na regra que
+    decide o bloco, ou a apuracao do historico complementado deixa de bater com a planilha."""
+    produto, aviso = _produto(db, item.descricao, item.ncm)
+    pendencias = [aviso] if aviso else []
+    bloco = None
+    origem_importada = (item.origem or "") in ORIGEM_IMPORTADA_TTD
+    if not origem_importada:
+        pendencias.append(
+            f"Item {item.numero}: origem {item.origem or 'nao informada'} nao e' mercadoria "
+            "importada (TTD exige orig 1 ou 6) - fora da apuracao do TTD.")
+    elif tipo == "S" or natureza == "DEVOLUCAO":
+        bloco, motivo = derivar_bloco(db, item.ncm, uf_contraparte, data, item.aliquota)
+        if motivo:
+            pendencias.append(f"Item {item.numero}: {motivo}")
+    return produto, bloco, pendencias
+
+
+def _casar_item_historico(nota: Nota, produto_id: int, quantidade: float,
+                          usados: set[int]) -> NotaItem | None:
+    """Casa um item do XML com um item da nota migrada pelo produto e pela quantidade (a
+    planilha nao tem chave de item nenhuma). Ambiguo (0 ou mais de 1) vira pendencia, nunca
+    escolha no escuro."""
+    candidatos = [i for i in nota.itens if i.id not in usados and i.produto_id == produto_id
+                 and abs(float(i.quantidade) - quantidade) <= 0.001]
+    return candidatos[0] if len(candidatos) == 1 else None
+
+
+def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, natureza: str,
+                           uf_contraparte: str | None, usuario: str) -> Resultado:
+    """Preenche numa nota migrada da planilha os campos fiscais que so' o XML tem: chave de
+    acesso, CFOP, natureza e, por item, NCM/origem/aliquota/CST/bloco. Quantidade e valor sao
+    intocaveis - o que a planilha trouxe sobre peso e dinheiro e' o que vale pro estoque e pra
+    apuracao ja' fechados; o XML so' acrescenta o que faltava."""
+    pendencias: list[str] = []
+    if not _valor_compativel(nota.valor_total, nf.valor_total):
+        pendencias.append(
+            f"Valor do XML (R$ {nf.valor_total or 0:,.2f}) diverge do valor migrado da planilha "
+            f"(R$ {float(nota.valor_total or 0):,.2f}) para a NF {nota.numero}. Complementada "
+            "mesmo assim - nao corrigido automaticamente, confira qual esta certo.")
+
+    nota.chave_acesso = nf.chave
+    nota.cfop = cfop
+    nota.natureza = natureza
+    nota.observacao = ((nota.observacao or "") + " | complementada por XML").strip(" |")
+    if nota.parceiro:
+        contraparte_cnpj = nf.dest_cnpj if nota.tipo == "S" else nf.emit_cnpj
+        if contraparte_cnpj and not nota.parceiro.cnpj:
+            nota.parceiro.cnpj = contraparte_cnpj
+        if uf_contraparte and not nota.parceiro.uf:
+            nota.parceiro.uf = uf_contraparte
+
+    usados: set[int] = set()
+    for item in nf.itens:
+        produto, bloco, avisos = _dados_fiscais_item(db, item, nota.tipo, natureza,
+                                                      uf_contraparte, nota.data_mov)
+        alvo = _casar_item_historico(nota, produto.id, item.quantidade, usados)
+        if alvo is None:
+            pendencias.append(
+                f"Item {item.numero} do XML ({produto.descricao}, {item.quantidade:,.1f} kg) nao "
+                f"foi casado com nenhum item da NF {nota.numero} migrada - confira manualmente.")
+            continue
+        usados.add(alvo.id)
+        alvo.ncm, alvo.origem_merc, alvo.aliquota = item.ncm, item.origem, item.aliquota
+        alvo.cst, alvo.bloco_ttd = item.cst, bloco
+        pendencias.extend(avisos)
+
+    db.flush()
+    for p in pendencias:
+        db.add(Excecao(tipo="importacao_xml", nota_id=nota.id, descricao=p, criado_por=usuario))
+
+    return Resultado("", "pendente" if pendencias else "complementada",
+                     "; ".join(pendencias) if pendencias else None,
+                     nf.chave, nf.numero, nota.tipo, nota.id)
+
+
 def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Resultado:
     cnpj_nosso = cnpj_empresa(db)
     if not cnpj_nosso:
@@ -202,6 +299,21 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
         return Resultado("", "pendente", f"Data de emissao {nf.data_emissao:%d/%m/%Y} e' futura",
                          nf.chave, nf.numero, tipo)
 
+    candidatas = buscar_candidatas_historico(db, nf, tipo)
+    if len(candidatas) == 1:
+        return complementar_historico(db, candidatas[0], nf, cfop, natureza, uf_contraparte,
+                                      usuario)
+    if len(candidatas) > 1:
+        nums = ", ".join(f"#{n.id} (NF {n.numero})" for n in candidatas)
+        db.add(Excecao(tipo="casamento_ambiguo", descricao=(
+            f"NF {nf.numero} do XML bate com {len(candidatas)} notas migradas sem chave de "
+            f"acesso ({nums}) - mesmo tipo/numero/serie/data. Nao escolhida automaticamente; "
+            "complemente manualmente ou grave a chave na nota certa."), criado_por=usuario))
+        db.flush()
+        return Resultado("", "pendente",
+                         f"NF {nf.numero}: {len(candidatas)} notas migradas candidatas, nao "
+                         f"escolhida automaticamente ({nums})", nf.chave, nf.numero, tipo)
+
     nota = Nota(chave_acesso=nf.chave, numero=nf.numero, serie=nf.serie, modelo=nf.modelo,
                 tipo=tipo, cfop=cfop, natureza=natureza, data_emissao=nf.data_emissao,
                 data_mov=nf.data_emissao, parceiro_id=parceiro.id if parceiro else None,
@@ -213,20 +325,9 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
     pendencias: list[str] = []
     produtos = []
     for item in nf.itens:
-        produto, aviso = _produto(db, item.descricao, item.ncm)
-        if aviso:
-            pendencias.append(aviso)
-        bloco = None
-        origem_importada = (item.origem or "") in ORIGEM_IMPORTADA_TTD
-        if not origem_importada:
-            pendencias.append(
-                f"Item {item.numero}: origem {item.origem or 'nao informada'} nao e' mercadoria "
-                "importada (TTD exige orig 1 ou 6) - fora da apuracao do TTD.")
-        elif tipo == "S" or natureza == "DEVOLUCAO":
-            bloco, motivo = derivar_bloco(db, item.ncm, uf_contraparte, nf.data_emissao,
-                                          item.aliquota)
-            if motivo:
-                pendencias.append(f"Item {item.numero}: {motivo}")
+        produto, bloco, avisos = _dados_fiscais_item(db, item, tipo, natureza, uf_contraparte,
+                                                      nf.data_emissao)
+        pendencias.extend(avisos)
         db.add(NotaItem(nota_id=nota.id, produto_id=produto.id, ncm=item.ncm,
                         origem_merc=item.origem, quantidade=item.quantidade, valor=item.valor,
                         base_calculo=item.base_calculo if item.base_calculo is not None else item.valor,
@@ -336,6 +437,7 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
         contagem[a.situacao] = contagem.get(a.situacao, 0) + 1
     lote.total = sum(contagem.values())
     lote.importadas = contagem.get("importada", 0)
+    lote.complementadas = contagem.get("complementada", 0)
     lote.duplicadas = contagem.get("duplicada", 0)
     lote.pendentes = contagem.get("pendente", 0)
     lote.erros = contagem.get("erro", 0) + contagem.get("ignorada", 0)

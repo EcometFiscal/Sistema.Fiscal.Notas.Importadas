@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { api, data as fdata } from '../api'
 
-const CORES = { importada: 'e', duplicada: '', pendente: 'acerto', erro: 'cancelada', ignorada: '' }
+const CORES = { importada: 'e', complementada: 's', duplicada: '', pendente: 'acerto',
+                erro: 'cancelada', ignorada: '' }
 const dataHora = (v) => (v ? new Date(v).toLocaleString('pt-BR') : '—')
 
 export default function Importar({ aoImportar }) {
@@ -60,7 +61,10 @@ export default function Importar({ aoImportar }) {
         <h2>Importar pacote de XML</h2>
         <p className="ajuda">
           O pacote que você exporta do sistema atual. Lê subpastas e zips dentro do zip, ignora o
-          que não for NF-e sua, e a chave de acesso impede a mesma nota de entrar duas vezes.
+          que não for NF-e sua, e a chave de acesso impede a mesma nota de entrar duas vezes. Se o
+          XML casar com uma nota migrada da planilha (sem chave de acesso), ele complementa —
+          NCM, origem, CFOP e bloco do TTD — em vez de duplicar; quantidade e valor da planilha
+          nunca mudam.
           {salvoCnpj && <> CNPJ configurado: <b>{salvoCnpj}</b>.</>}
         </p>
         <div className="grade g3">
@@ -82,7 +86,11 @@ export default function Importar({ aoImportar }) {
             <div className="kpi"><div className="rot">Arquivos</div>
               <div className="val num">{lote.total}</div></div>
             <div className="kpi"><div className="rot">Importadas</div>
-              <div className="val num">{lote.importadas}</div></div>
+              <div className="val num">{lote.importadas}</div>
+              <div className="obs">notas novas</div></div>
+            <div className="kpi"><div className="rot">Complementadas</div>
+              <div className="val num">{lote.complementadas}</div>
+              <div className="obs">notas migradas que ganharam os dados do XML</div></div>
             <div className="kpi"><div className="rot">Já existiam</div>
               <div className="val num">{lote.duplicadas}</div>
               <div className="obs">mesma chave de acesso</div></div>
@@ -123,6 +131,7 @@ export default function Importar({ aoImportar }) {
             <thead><tr>
               <th>#</th><th>Quando</th><th>Origem</th><th>Pacote</th>
               <th className="dir">Arquivos</th><th className="dir">Importadas</th>
+              <th className="dir">Complementadas</th>
               <th className="dir">Duplicadas</th><th className="dir">Pendentes</th>
               <th className="dir">Fora</th><th>Quem</th>
             </tr></thead>
@@ -136,13 +145,14 @@ export default function Importar({ aoImportar }) {
                   <td>{l.nome}</td>
                   <td className="dir num">{l.total}</td>
                   <td className="dir num">{l.importadas}</td>
+                  <td className="dir num">{l.complementadas}</td>
                   <td className="dir num">{l.duplicadas}</td>
                   <td className="dir num">{l.pendentes}</td>
                   <td className="dir num">{l.erros}</td>
                   <td>{l.criado_por}</td>
                 </tr>
               ))}
-              {!lotes.length && <tr><td colSpan={10} className="vazio">nenhum pacote importado ainda</td></tr>}
+              {!lotes.length && <tr><td colSpan={11} className="vazio">nenhum pacote importado ainda</td></tr>}
             </tbody>
           </table>
         </div>

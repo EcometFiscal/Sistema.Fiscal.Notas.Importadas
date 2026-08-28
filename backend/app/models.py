@@ -199,6 +199,7 @@ class LoteImportacao(Base):
     nome: Mapped[str | None] = mapped_column(Text)
     total: Mapped[int] = mapped_column(Integer, default=0)
     importadas: Mapped[int] = mapped_column(Integer, default=0)
+    complementadas: Mapped[int] = mapped_column(Integer, default=0)
     duplicadas: Mapped[int] = mapped_column(Integer, default=0)
     pendentes: Mapped[int] = mapped_column(Integer, default=0)
     erros: Mapped[int] = mapped_column(Integer, default=0)
@@ -217,7 +218,7 @@ class ArquivoImportado(Base):
     chave_acesso: Mapped[str | None] = mapped_column(String(44))
     numero: Mapped[int | None] = mapped_column(Integer)
     tipo: Mapped[str | None] = mapped_column(String(1))
-    situacao: Mapped[str] = mapped_column(String(20))      # importada|duplicada|pendente|erro|ignorada
+    situacao: Mapped[str] = mapped_column(String(20))      # importada|complementada|duplicada|pendente|erro|ignorada
     motivo: Mapped[str | None] = mapped_column(Text)
     nota_id: Mapped[int | None] = mapped_column(ForeignKey("nota.id", ondelete="SET NULL"))
 

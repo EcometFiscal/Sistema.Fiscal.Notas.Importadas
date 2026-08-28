@@ -228,6 +228,94 @@ def test_lote_fica_registrado(cliente):
     assert detalhe["arquivos"][0]["chave_acesso"]
 
 
+# ----------------------------------------- casamento com nota migrada da planilha (sem chave)
+def _nota_migrada(db, *, numero, data, tipo="S", valor=20000.0, quantidade=1000.0,
+                  produto="SUCATA DE ALUMINIO", parceiro_nome=None) -> Nota:
+    """Simula o que a Fase 1 deixou na base: nota sem chave de acesso, sem CFOP/NCM/origem/UF -
+    so' tipo, numero, data, parceiro, quantidade e valor, que e' o que a planilha tinha."""
+    produto_row = db.execute(select(Produto).where(Produto.descricao == produto)).scalars().one()
+    parceiro_row = Parceiro(nome=parceiro_nome or f"PARCEIRO HISTORICO {numero}", status="migrado")
+    db.add(parceiro_row)
+    db.flush()
+    nota = Nota(numero=numero, serie="1", tipo=tipo, natureza="VENDA", data_emissao=data,
+               data_mov=data, parceiro_id=parceiro_row.id, valor_total=valor,
+               status="lancada", criado_por="migracao", origem_registro="planilha!L1")
+    db.add(nota)
+    db.flush()
+    db.add(NotaItem(nota_id=nota.id, produto_id=produto_row.id, quantidade=quantidade,
+                    valor=valor, base_calculo=valor))
+    db.commit()
+    db.refresh(nota)
+    return nota
+
+
+def test_nota_migrada_sem_chave_e_complementada_nao_duplicada(cliente, db):
+    hist = _nota_migrada(db, numero=9601, data=HOJE)
+    lote = _sobe(cliente, {"a.xml": nfe(9601, data=HOJE)})
+    assert lote["complementadas"] == 1 and lote["importadas"] == 0
+    assert lote["arquivos"][0]["situacao"] == "complementada"
+
+    todas = db.execute(select(Nota).where(Nota.numero == 9601, Nota.tipo == "S")).scalars().all()
+    assert len(todas) == 1 and todas[0].id == hist.id      # nao duplicou
+
+    db.refresh(hist)
+    assert hist.chave_acesso and len(hist.chave_acesso) == 44
+    assert hist.cfop == "5101"
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == hist.id)).scalars().one()
+    assert item.ncm == "76020000" and item.origem_merc == "1" and item.bloco_ttd == "2"
+
+
+def test_complemento_nao_altera_quantidade_nem_valor(cliente, db):
+    hist = _nota_migrada(db, numero=9602, data=HOJE, valor=19999.50, quantidade=1000.0)
+    lote = _sobe(cliente, {"a.xml": nfe(9602, data=HOJE, valor=20000.0, quantidade=1000.0)})
+
+    # valor diverge alem da tolerancia de centavos: complementa mesmo assim e abre pendencia,
+    # nao corrige o valor migrado sozinho.
+    assert lote["complementadas"] == 0 and lote["pendentes"] == 1
+    db.refresh(hist)
+    assert hist.chave_acesso                                # complementou...
+    assert float(hist.valor_total) == pytest.approx(19999.50)   # ...mas nao tocou no valor
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == hist.id)).scalars().one()
+    assert float(item.quantidade) == pytest.approx(1000.0)
+    assert float(item.valor) == pytest.approx(19999.50)
+    exc = db.execute(select(Excecao).where(Excecao.nota_id == hist.id)).scalars().all()
+    assert any("diverge" in e.descricao for e in exc)
+
+
+def test_duas_candidatas_historicas_viram_pendencia_sem_escolha(cliente, db):
+    h1 = _nota_migrada(db, numero=9603, data=HOJE, parceiro_nome="CLIENTE A")
+    h2 = _nota_migrada(db, numero=9603, data=HOJE, parceiro_nome="CLIENTE B")
+    lote = _sobe(cliente, {"a.xml": nfe(9603, data=HOJE)})
+
+    assert lote["complementadas"] == 0 and lote["importadas"] == 0 and lote["pendentes"] == 1
+    db.refresh(h1); db.refresh(h2)
+    assert h1.chave_acesso is None and h2.chave_acesso is None    # nenhuma escolhida sozinha
+    todas = db.execute(select(Nota).where(Nota.numero == 9603, Nota.tipo == "S")).scalars().all()
+    assert len(todas) == 2                                        # nao criou uma terceira
+    exc = db.execute(select(Excecao).where(Excecao.tipo == "casamento_ambiguo")).scalars().all()
+    assert any(str(h1.id) in e.descricao and str(h2.id) in e.descricao for e in exc)
+
+
+def test_nota_sem_historico_correspondente_continua_entrando_como_nova(cliente, db):
+    lote = _sobe(cliente, {"a.xml": nfe(9604, data=HOJE)})
+    assert lote["importadas"] == 1 and lote["complementadas"] == 0
+    assert lote["arquivos"][0]["situacao"] == "importada"
+
+
+def test_reimportar_pacote_apos_complemento_nao_faz_nada(cliente, db):
+    _nota_migrada(db, numero=9605, data=HOJE)
+    xml = nfe(9605, data=HOJE)
+    primeiro = _sobe(cliente, {"a.xml": xml})
+    assert primeiro["complementadas"] == 1
+
+    segundo = _sobe(cliente, {"a.xml": xml})
+    assert segundo["duplicadas"] == 1
+    assert segundo["complementadas"] == 0 and segundo["importadas"] == 0
+
+    todas = db.execute(select(Nota).where(Nota.numero == 9605, Nota.tipo == "S")).scalars().all()
+    assert len(todas) == 1                                        # a reimportacao nao criou nada
+
+
 def test_o_pacote_diz_qual_e_o_cnpj_do_estabelecimento(db, cliente):
     """Sem A1 e sem cadastro previo: o CNPJ que aparece dos dois lados e' o da empresa."""
     from app.models import Configuracao
