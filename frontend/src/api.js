@@ -56,7 +56,20 @@ export const api = {
     const r = await fetch(BASE + '/importar/zip', { method: 'POST', body: fd,
                                                     headers: { 'X-Usuario': 'fiscal',
                                                                'X-Senha': senha.ler() } })
-    const corpo = await r.json()
+    const texto = await r.text()
+    let corpo
+    try { corpo = texto ? JSON.parse(texto) : null }
+    catch {
+      // A funcao pode estourar o tempo limite no meio da importacao (pacote grande, rede ate'
+      // o Supabase) - a resposta nesse caso nao e' JSON. Mensagem especifica em vez da generica
+      // "nao foi possivel importar o pacote", que nao dizia o que fazer.
+      throw Object.assign(new Error('erro'), { status: r.status, corpo: { detail: { mensagem:
+        r.status === 504 || !r.ok
+          ? 'A importação demorou demais e a função foi encerrada antes de terminar. O pacote é '
+            + 'importado de uma vez só (tudo ou nada) - nada foi gravado, pode tentar de novo. Se '
+            + 'continuar acontecendo, quebre o .zip em pacotes menores.'
+          : 'Resposta inesperada do servidor ao importar.' } } })
+    }
     if (!r.ok) throw Object.assign(new Error('erro'), { status: r.status, corpo })
     return corpo
   },
