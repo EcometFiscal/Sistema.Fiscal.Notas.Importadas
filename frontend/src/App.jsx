@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import Lancamento from './pages/Lancamento'
 import Estoque from './pages/Estoque'
 import Notas from './pages/Notas'
@@ -17,10 +17,21 @@ const ABAS = [
   ['regras', 'Alíquotas'],
 ]
 
+function temaAtual() {
+  try { return document.documentElement.getAttribute('data-theme') || 'light' }
+  catch { return 'light' }
+}
+
 export default function App() {
   const [aba, setAba] = useState('lancamento')
   const [recarga, setRecarga] = useState(0)
+  const [tema, setTema] = useState(temaAtual)
   const atualizar = () => setRecarga((n) => n + 1)
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', tema)
+    try { localStorage.setItem('lastro_tema', tema) } catch { /* ignora */ }
+  }, [tema])
 
   return (
     <>
@@ -34,6 +45,11 @@ export default function App() {
               </button>
             ))}
           </nav>
+          <button type="button" className="tema-botao"
+                  title={tema === 'dark' ? 'Modo claro' : 'Modo escuro'}
+                  onClick={() => setTema((t) => (t === 'dark' ? 'light' : 'dark'))}>
+            {tema === 'dark' ? '🌞' : '🌙'}
+          </button>
         </div>
       </header>
       <main>
