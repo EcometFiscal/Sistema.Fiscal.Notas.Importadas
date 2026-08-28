@@ -20,9 +20,10 @@ from . import apuracao as ap
 from . import estoque as est
 from . import fechamento as fec
 
-AZUL = "1F3864"
-CINZA = "F2F2F2"
-FINA = Side(style="thin", color="BFBFBF")
+AZUL = "FF1F3864"
+CINZA = "FFF2F2F2"
+FONTE = "Calibri"
+FINA = Side(style="thin", color="FFBFBFBF")
 BORDA = Border(left=FINA, right=FINA, top=FINA, bottom=FINA)
 DINHEIRO = 'R$ #,##0.00'
 PESO = '#,##0.0'
@@ -31,11 +32,15 @@ PCT = '0.00%'
 CABECALHO = ["DATA", "DOCUMENTO", "NOME", "PRODUTO", "VALOR CONTÁBIL", "BASE DE CÁLCULO",
              "ALÍQUOTA", "VALOR ICMS", "ALÍQUOTA PRESUMIDO", "CRÉDITO PRESUMIDO"]
 ROTULO_BLOCO = {"1": "Interestadual:  ", "2": "Interestadual:  ", "3": "Interna:  "}
+# Cor de cada bloco (cabecalho + lancamentos + total), igual nas vendas e na devolucao - e' o
+# que deixa visualmente obvio de qual bloco cada linha e', sem precisar ler a coluna.
+COR_BLOCO = {"1": "FFFAC090", "2": "FFB7DEE8", "3": "FFC3D69B"}
+AMARELO = "FFFFFF00"
 
 
 def _titulo(ws, linha, texto, largura=10):
     c = ws.cell(linha, 1, texto)
-    c.font = Font(bold=True, size=11, color="FFFFFF")
+    c.font = Font(name=FONTE, bold=True, size=11, color="FFFFFFFF")
     c.fill = PatternFill("solid", fgColor=AZUL)
     ws.merge_cells(start_row=linha, start_column=1, end_row=linha, end_column=largura)
     return linha + 1
@@ -44,7 +49,7 @@ def _titulo(ws, linha, texto, largura=10):
 def _cabecalho(ws, linha):
     for i, h in enumerate(CABECALHO, start=1):
         c = ws.cell(linha, i, h)
-        c.font = Font(bold=True, size=9)
+        c.font = Font(name=FONTE, bold=True, size=9)
         c.fill = PatternFill("solid", fgColor=CINZA)
         c.border = BORDA
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -53,10 +58,16 @@ def _cabecalho(ws, linha):
 
 
 def _bloco(ws, linha, bloco: str, carga: float, lancamentos: list[dict], regra) -> int:
+    cor = COR_BLOCO[bloco]
+    linha_cabecalho = linha
     linha = _cabecalho(ws, linha)
+    for col in range(1, 11):
+        ws.cell(linha_cabecalho, col).fill = PatternFill("solid", fgColor=cor)
     c = ws.cell(linha, 1, ROTULO_BLOCO[bloco])
-    c.font = Font(bold=True, size=9)
+    c.font = Font(name=FONTE, bold=True, size=9)
     ws.cell(linha, 2, carga).number_format = '0.0'
+    for col in range(1, 11):
+        ws.cell(linha, col).fill = PatternFill("solid", fgColor=cor)
     linha += 1
     inicio = linha
     for l in lancamentos:
@@ -72,28 +83,31 @@ def _bloco(ws, linha, bloco: str, carga: float, lancamentos: list[dict], regra) 
         ws.cell(linha, 10, l["credito_presumido"]).number_format = DINHEIRO
         for col in range(1, 11):
             ws.cell(linha, col).border = BORDA
+            ws.cell(linha, col).fill = PatternFill("solid", fgColor=cor)
         linha += 1
     fim = linha - 1
     c = ws.cell(linha, 1, "TOTAL")
-    c.font = Font(bold=True)
+    c.font = Font(name=FONTE, bold=True, size=11)
     for col in (5, 6, 8, 10):
         letra = get_column_letter(col)
         cel = ws.cell(linha, col,
                       f"=SUM({letra}{inicio}:{letra}{fim})" if lancamentos else 0)
         cel.number_format = DINHEIRO
-        cel.font = Font(bold=True)
+        cel.font = Font(name=FONTE, bold=True, size=11)
     for col in range(1, 11):
         ws.cell(linha, col).border = BORDA
-        ws.cell(linha, col).fill = PatternFill("solid", fgColor=CINZA)
+        ws.cell(linha, col).fill = PatternFill("solid", fgColor=cor)
+    for col in range(1, 11):
+        ws.cell(linha + 1, col).fill = PatternFill("solid", fgColor=cor)
     return linha + 2
 
 
 def _linha_valor(ws, linha, rotulo, valor, negrito=False, formato=DINHEIRO, col_valor=7):
     c = ws.cell(linha, 1, rotulo)
-    c.font = Font(bold=negrito)
+    c.font = Font(name=FONTE, bold=negrito, size=11)
     v = ws.cell(linha, col_valor, valor)
     v.number_format = formato
-    v.font = Font(bold=negrito)
+    v.font = Font(name=FONTE, bold=negrito, size=11)
     return linha + 1
 
 
@@ -137,9 +151,9 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
     linha += 1
 
     linha = _titulo(ws, linha, "FUNDO SOCIAL")
-    ws.cell(linha, 5, "Base de Cálculo").font = Font(bold=True, size=9)
-    ws.cell(linha, 6, "Alíquota").font = Font(bold=True, size=9)
-    ws.cell(linha, 7, "Valor").font = Font(bold=True, size=9)
+    ws.cell(linha, 5, "Base de Cálculo").font = Font(name=FONTE, bold=True, size=9)
+    ws.cell(linha, 6, "Alíquota").font = Font(name=FONTE, bold=True, size=9)
+    ws.cell(linha, 7, "Valor").font = Font(name=FONTE, bold=True, size=9)
     linha += 1
     cp = dados["credito_presumido"]
     base = dados["base_beneficiada"]
@@ -156,7 +170,7 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
     ws.cell(linha, 1, "Diferença a maior entre a base e o valor destinado aos fundos (a-(b+c))")
     ws.cell(linha, 7, f"=G{p}-(G{p+1}+G{p+2})").number_format = DINHEIRO
     linha += 1
-    ws.cell(linha, 1, "Total").font = Font(bold=True)
+    ws.cell(linha, 1, "Total").font = Font(name=FONTE, bold=True, size=11)
     ws.cell(linha, 7, f"=G{p+2}+G{linha-1}").number_format = DINHEIRO
     total_vendas = linha
     linha += 2
@@ -177,19 +191,19 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
     ws.cell(linha, 1, "Diferença a maior entre a base e o valor destinado aos fundos (a-(b+c))")
     ws.cell(linha, 7, f"=G{p2}-(G{p2+1}+G{p2+2})").number_format = DINHEIRO
     linha += 1
-    ws.cell(linha, 1, "Total").font = Font(bold=True)
+    ws.cell(linha, 1, "Total").font = Font(name=FONTE, bold=True, size=11)
     ws.cell(linha, 7, f"=G{p2+2}+G{linha-1}").number_format = DINHEIRO
     total_dev = linha
     linha += 1
-    ws.cell(linha, 1, "TOTAL A RECOLHER").font = Font(bold=True)
+    ws.cell(linha, 1, "TOTAL A RECOLHER").font = Font(name=FONTE, bold=True, size=11)
     ws.cell(linha, 7, f"=G{total_vendas}-G{total_dev}").number_format = DINHEIRO
     linha += 2
 
     linha = _titulo(ws, linha, "APURAÇÃO DO FUNDO DE APOIO À MANUTENÇÃO E AO DESENVOLVIMENTO "
                                "DA EDUCAÇÃO SUPERIOR")
-    ws.cell(linha, 5, "Base de Calc.").font = Font(bold=True, size=9)
-    ws.cell(linha, 6, "Alíquota").font = Font(bold=True, size=9)
-    ws.cell(linha, 7, "Valor").font = Font(bold=True, size=9)
+    ws.cell(linha, 5, "Base de Calc.").font = Font(name=FONTE, bold=True, size=9)
+    ws.cell(linha, 6, "Alíquota").font = Font(name=FONTE, bold=True, size=9)
+    ws.cell(linha, 7, "Valor").font = Font(name=FONTE, bold=True, size=9)
     linha += 1
     for rotulo, b in [("Total do crédito presumido ou estorno de débito - TTD 409, 410 ou 411", cp),
                       ("Estorno de crédito presumido TTD 409, 410 ou 411 - Devolução", est_)]:
@@ -198,7 +212,7 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
         ws.cell(linha, 6, 0.02).number_format = '0.00%'
         ws.cell(linha, 7, f"=E{linha}*F{linha}").number_format = DINHEIRO
         linha += 1
-    ws.cell(linha, 1, "Fundo Educação a recolher:").font = Font(bold=True)
+    ws.cell(linha, 1, "Fundo Educação a recolher:").font = Font(name=FONTE, bold=True, size=11)
     ws.cell(linha, 7, f"=G{linha-2}-G{linha-1}").number_format = DINHEIRO
     linha += 2
 
@@ -215,13 +229,15 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
         ("Fundo Educação a recolher", dados["fundo_educacao"]),
     ]
     for i, (rotulo, valor) in enumerate(resumo, start=1):
-        ws.cell(linha, 1, i).font = Font(bold=True)
+        ws.cell(linha, 1, i).font = Font(name=FONTE, bold=True, size=11)
         ws.cell(linha, 2, rotulo)
         c = ws.cell(linha, 7, valor)
         c.number_format = DINHEIRO
-        c.font = Font(bold=True)
+        c.font = Font(name=FONTE, bold=True, size=11)
         if i >= 5:
-            ws.cell(linha, 8, "À PAGAR").font = Font(bold=True, color="C00000")
+            ws.cell(linha, 8, "À PAGAR").font = Font(name=FONTE, bold=True, size=11, color="FFC00000")
+            for col in range(1, 9):
+                ws.cell(linha, col).fill = PatternFill("solid", fgColor=AMARELO)
         linha += 1
 
     # entradas de importacao do mes
@@ -231,7 +247,7 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
              "Total R$ NF", "Total QTD", "Produto", "Natureza", "NCM", "Orig+CST"],
             [12, 14, 10, 8, 8, 46, 8, 16, 14, 24, 14, 12, 10]), start=1):
         c = ws2.cell(1, i, h)
-        c.font = Font(bold=True, size=9)
+        c.font = Font(name=FONTE, bold=True, size=9)
         c.fill = PatternFill("solid", fgColor=CINZA)
         ws2.column_dimensions[get_column_letter(i)].width = w
     fim_mes = dt.date(ano + (mes == 12), (mes % 12) + 1, 1) - dt.timedelta(days=1)
@@ -279,7 +295,7 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
          "totais congelados no fechamento."),
     ]
     for i, (a, b) in enumerate(info, start=1):
-        ws3.cell(i, 1, a).font = Font(bold=True, size=9)
+        ws3.cell(i, 1, a).font = Font(name=FONTE, bold=True, size=9)
         c = ws3.cell(i, 2, b)
         c.alignment = Alignment(wrap_text=True, vertical="top")
         if isinstance(b, float):
@@ -304,7 +320,7 @@ def exportar_estoque(db: Session, de: dt.date | None, ate: dt.date | None) -> By
                   "SAÍDAS (KG)", "SALDO FINAL (KG)", "SALDO FINAL (R$)", "CUSTO MÉDIO (R$/KG)"]
     for i, (h, w) in enumerate(zip(cabecalhos, [26, 18, 18, 16, 16, 16, 18, 18]), start=1):
         c = ws.cell(1, i, h)
-        c.font = Font(bold=True, size=9, color="FFFFFF")
+        c.font = Font(name=FONTE, bold=True, size=9, color="FFFFFFFF")
         c.fill = PatternFill("solid", fgColor=AZUL)
         c.alignment = Alignment(horizontal="center", wrap_text=True)
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -326,12 +342,12 @@ def exportar_estoque(db: Session, de: dt.date | None, ate: dt.date | None) -> By
                 c.number_format = fmt
             c.border = BORDA
         linha += 1
-    ws.cell(linha, 1, "TOTAL").font = Font(bold=True)
+    ws.cell(linha, 1, "TOTAL").font = Font(name=FONTE, bold=True, size=11)
     for col in (2, 3, 4, 5, 6, 7):
         letra = get_column_letter(col)
         c = ws.cell(linha, col, f"=SUM({letra}2:{letra}{linha-1})")
         c.number_format = PESO if col in (2, 4, 5, 6) else DINHEIRO
-        c.font = Font(bold=True)
+        c.font = Font(name=FONTE, bold=True, size=11)
         c.fill = PatternFill("solid", fgColor=CINZA)
 
     ws2 = wb.create_sheet("MOVIMENTAÇÃO")
@@ -339,7 +355,7 @@ def exportar_estoque(db: Session, de: dt.date | None, ate: dt.date | None) -> By
             "CUSTO DA SAÍDA (R$)", "SALDO DO PRODUTO (KG)", "USUÁRIO"]
     for i, (h, w) in enumerate(zip(cab2, [12, 12, 14, 10, 44, 24, 14, 16, 18, 20, 14]), start=1):
         c = ws2.cell(1, i, h)
-        c.font = Font(bold=True, size=9, color="FFFFFF")
+        c.font = Font(name=FONTE, bold=True, size=9, color="FFFFFFFF")
         c.fill = PatternFill("solid", fgColor=AZUL)
         ws2.column_dimensions[get_column_letter(i)].width = w
     r = 2
@@ -393,19 +409,19 @@ def exportar_pendencias(db: Session) -> BytesIO:
     ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 16
     linha = _titulo(ws, 1, "RELATÓRIO DE ERROS E PENDÊNCIAS", largura=2)
-    ws.cell(linha, 1, "Gerado em").font = Font(bold=True, size=9)
+    ws.cell(linha, 1, "Gerado em").font = Font(name=FONTE, bold=True, size=9)
     ws.cell(linha, 2, dt.datetime.now().strftime("%d/%m/%Y %H:%M"))
     linha += 1
-    ws.cell(linha, 1, "Total de pendências").font = Font(bold=True, size=9)
+    ws.cell(linha, 1, "Total de pendências").font = Font(name=FONTE, bold=True, size=9)
     ws.cell(linha, 2, len(linhas))
     linha += 1
-    ws.cell(linha, 1, "Não resolvidas").font = Font(bold=True, size=9)
+    ws.cell(linha, 1, "Não resolvidas").font = Font(name=FONTE, bold=True, size=9)
     ws.cell(linha, 2, sum(1 for e, _ in linhas if not e.resolvida))
     linha += 2
-    ws.cell(linha, 1, "Por área").font = Font(bold=True, size=10)
+    ws.cell(linha, 1, "Por área").font = Font(name=FONTE, bold=True, size=10)
     linha += 1
-    ws.cell(linha, 1, "Área").font = Font(bold=True, size=9)
-    ws.cell(linha, 2, "Pendências").font = Font(bold=True, size=9)
+    ws.cell(linha, 1, "Área").font = Font(name=FONTE, bold=True, size=9)
+    ws.cell(linha, 2, "Pendências").font = Font(name=FONTE, bold=True, size=9)
     linha += 1
     por_area: dict[str, int] = {}
     for e, _ in linhas:
@@ -421,7 +437,7 @@ def exportar_pendencias(db: Session) -> BytesIO:
            "QUANTIDADE (KG)", "VALOR (R$)", "USUÁRIO"]
     for i, (h, w) in enumerate(zip(cab, [16, 20, 14, 11, 10, 10, 60, 30, 16, 16, 14]), start=1):
         c = ws2.cell(1, i, h)
-        c.font = Font(bold=True, size=9, color="FFFFFF")
+        c.font = Font(name=FONTE, bold=True, size=9, color="FFFFFFFF")
         c.fill = PatternFill("solid", fgColor=AZUL)
         c.alignment = Alignment(horizontal="center", wrap_text=True)
         ws2.column_dimensions[get_column_letter(i)].width = w
