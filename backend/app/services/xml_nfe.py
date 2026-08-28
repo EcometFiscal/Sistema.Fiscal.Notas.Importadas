@@ -195,13 +195,26 @@ def ler(conteudo: bytes | str) -> NotaFiscal:
     )
 
 
-def evento_cancelamento(conteudo: bytes | str) -> str | None:
-    """Se o arquivo for um evento de cancelamento autorizado, devolve a chave cancelada."""
+EVENTO_TAGS = ("proceventonfe", "evento", "retevento")
+
+
+def _raiz_de_evento(conteudo: bytes | str) -> ET.Element | None:
+    """A raiz do XML de evento, se o arquivo for um (cancelamento, carta de correcao, etc).
+    Comparacao de tag em minusculas: pacotes reais chegam ora com "procEventoNFe", ora com
+    "ProcEventoNFe" - maiuscula errada nao pode fazer um cancelamento passar batido como erro
+    de leitura."""
     try:
         raiz = ET.fromstring(conteudo if isinstance(conteudo, bytes) else conteudo.encode())
     except ET.ParseError:
         return None
-    if _tag(raiz) not in ("procEventoNFe", "evento", "retEvento"):
+    return raiz if _tag(raiz).lower() in EVENTO_TAGS else None
+
+
+def evento_cancelamento(conteudo: bytes | str) -> str | None:
+    """Se o arquivo for um evento de cancelamento autorizado (tpEvento 110111), devolve a
+    chave cancelada."""
+    raiz = _raiz_de_evento(conteudo)
+    if raiz is None:
         return None
     for elem in raiz.iter():
         if _tag(elem) == "tpEvento" and (elem.text or "").strip() == "110111":
@@ -209,3 +222,22 @@ def evento_cancelamento(conteudo: bytes | str) -> str | None:
                 if _tag(e2) == "chNFe" and e2.text:
                     return e2.text.strip()
     return None
+
+
+def evento_outro(conteudo: bytes | str) -> str | None:
+    """Se o arquivo for um evento de NF-e que nao e' cancelamento (Carta de Correcao, EPEC,
+    etc.), devolve uma descricao curta pra virar pendencia informativa em vez de erro de
+    leitura - o pacote real de julho/2026 trouxe uma Carta de Correcao (tpEvento 110110) que
+    sem isto aparecia como "Raiz inesperada"."""
+    raiz = _raiz_de_evento(conteudo)
+    if raiz is None:
+        return None
+    tp = desc = None
+    for elem in raiz.iter():
+        if _tag(elem) == "tpEvento":
+            tp = (elem.text or "").strip()
+        if _tag(elem) == "descEvento":
+            desc = (elem.text or "").strip()
+    if tp == "110111":
+        return None                                   # cancelamento - ja' tratado a parte
+    return f"{desc or 'evento'} (tpEvento {tp or '?'})"

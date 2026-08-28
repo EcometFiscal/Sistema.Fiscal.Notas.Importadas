@@ -22,7 +22,7 @@ from ..models import (ArquivoImportado, Configuracao, Excecao, LoteImportacao, N
 from . import apuracao as ap
 from . import estoque as est
 from . import fechamento as fec
-from .xml_nfe import NotaFiscal, XmlInvalido, evento_cancelamento, ler
+from .xml_nfe import NotaFiscal, XmlInvalido, evento_cancelamento, evento_outro, ler
 
 # CFOPs de devolucao de venda que voltam como entrada
 CFOP_DEVOLUCAO = {"1201", "1202", "1410", "1411", "2201", "2202", "2410", "2411"}
@@ -461,6 +461,12 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
         chave_cancelada = evento_cancelamento(dados)
         if chave_cancelada:
             cancelamentos.append((nome_arq, chave_cancelada))
+            continue
+        outro_evento = evento_outro(dados)
+        if outro_evento:
+            db.add(ArquivoImportado(lote_id=lote.id, arquivo=nome_arq, situacao="ignorada",
+                                    motivo=f"Evento de NF-e que nao e' cancelamento: "
+                                          f"{outro_evento} - ignorado"))
             continue
         try:
             nf = ler(dados)

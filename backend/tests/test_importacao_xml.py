@@ -227,6 +227,31 @@ def test_evento_de_cancelamento_cancela_a_nota(cliente, db):
     assert nota.status == "cancelada"
 
 
+def test_evento_que_nao_e_cancelamento_e_ignorado_nao_vira_erro(cliente):
+    """Carta de Correcao (tpEvento 110110) nao e' cancelamento nem NF-e - vira ignorada com
+    motivo, nao erro de leitura (achado real no pacote de julho/2026)."""
+    carta = '''<?xml version="1.0" encoding="UTF-8"?>
+<ProcEventoNFe versao="1.00" xmlns="http://www.portalfiscal.inf.br/nfe">
+ <evento versao="1.00"><infEvento Id="ID1101109999999">
+  <tpEvento>110110</tpEvento><descEvento>Carta de Correcao</descEvento>
+ </infEvento></evento>
+</ProcEventoNFe>'''
+    lote = _sobe(cliente, {"carta.xml": carta})
+    arq = lote["arquivos"][0]
+    assert arq["situacao"] == "ignorada" and "Carta de Correcao" in arq["motivo"]
+
+
+def test_cancelamento_com_raiz_maiuscula_ainda_funciona(cliente, db):
+    """O root tag do evento as vezes chega como ProcEventoNFe (maiusculo) em vez de
+    procEventoNFe - o cancelamento nao pode depender de maiuscula/minuscula."""
+    ch = chave(9700)
+    _sobe(cliente, {"n.xml": nfe(9700, chave_custom=ch, data=HOJE)})
+    evento_maiusculo = evento_cancelamento(ch).replace("procEventoNFe", "ProcEventoNFe")
+    _sobe(cliente, {"ev.xml": evento_maiusculo})
+    nota = db.execute(select(Nota).where(Nota.chave_acesso == ch)).scalars().one()
+    assert nota.status == "cancelada"
+
+
 def test_zip_com_subpasta_e_zip_aninhado(cliente):
     import io
     import zipfile
