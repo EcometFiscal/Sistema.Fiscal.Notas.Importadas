@@ -155,6 +155,22 @@ def test_devolucao_de_venda_volta_ao_estoque(cliente, db):
     assert nota.tipo == "E" and nota.natureza == "DEVOLUCAO"
 
 
+def test_devolucao_com_nome_de_produto_diferente_casa_pelo_ncm_e_cst(cliente, db):
+    """Cliente que devolve pode chamar o produto de outro jeito no XML - o que importa pra
+    casar e' NCM e CST (= origem + CST) batendo com o nosso cadastro, nao o nome."""
+    lote = _sobe(cliente, {"d.xml": nfe(8410, cfop="1202", emit_cnpj="98765432000188",
+                                        dest_cnpj=CNPJ_EMPRESA, fin="4", aliquota=4.0,
+                                        origem="1", produto="ALUMINIO SUCATA MISTA",
+                                        ncm="76020000", quantidade=500, valor=9000,
+                                        data=ONTEM)})
+    assert lote["arquivos"][0]["situacao"] != "erro"
+    nota = db.execute(select(Nota).where(Nota.numero == 8410)).scalars().one()
+    assert nota.tipo == "E" and nota.natureza == "DEVOLUCAO"
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == nota.id)).scalars().one()
+    assert item.produto.descricao == "SUCATA DE ALUMINIO"      # casou pelo NCM, nao pelo nome
+    assert item.cst_completo == "100"                          # origem 1 + CST 00
+
+
 def test_chave_repetida_nao_duplica(cliente):
     xml = nfe(8500, data=HOJE)
     primeiro = _sobe(cliente, {"a.xml": xml})

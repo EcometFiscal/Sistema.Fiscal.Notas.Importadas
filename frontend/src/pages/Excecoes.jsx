@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { api, kg, rs } from '../api'
+import { api, baixar, kg, rs } from '../api'
 
 const ROTULOS = {
   saida_sem_saldo: 'Saída sem saldo',
@@ -28,10 +28,16 @@ export default function Excecoes({ recarga }) {
       </div>
 
       <div className="cartao" style={{ marginTop: 20 }}>
-        <h2>Pendências</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <h2>Pendências</h2>
+          <button type="button" className="leve" onClick={() => baixar('/exportar/pendencias')}>
+            Relatório de erros em Excel
+          </button>
+        </div>
         <p className="ajuda">
-          Aqui fica tudo que o sistema aceitou mas alguém precisa olhar. Na planilha isto não existia:
-          o número saía errado e ninguém ficava sabendo.
+          Aqui fica tudo que o sistema aceitou mas alguém precisa olhar — de apuração, estoque ou
+          importação de dados. Na planilha isto não existia: o número saía errado e ninguém ficava
+          sabendo.
         </p>
         <div className="rolagem">
           <table>

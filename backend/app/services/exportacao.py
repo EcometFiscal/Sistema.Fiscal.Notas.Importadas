@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Nota, NotaItem, Produto
+from ..models import Excecao, Nota, NotaItem, Produto
 from . import apuracao as ap
 from . import estoque as est
 from . import fechamento as fec
@@ -356,6 +356,92 @@ def exportar_estoque(db: Session, de: dt.date | None, ate: dt.date | None) -> By
             ws2.cell(r, 9, l["custo_total"]).number_format = DINHEIRO
             ws2.cell(r, 10, l["saldo"]).number_format = PESO
             r += 1
+    ws2.freeze_panes = "A2"
+    ws2.auto_filter.ref = f"A1:K{r-1}"
+
+    saida = BytesIO()
+    wb.save(saida)
+    saida.seek(0)
+    return saida
+
+
+# Area de origem de cada tipo de pendencia, pro relatorio de erros agrupar o que a apuracao,
+# o estoque e a importacao de dados encontraram - sem essa separacao vira uma lista solta e
+# ninguem sabe se um item e' problema fiscal ou so' informativo.
+AREA_POR_TIPO = {
+    "importacao_xml": "Importação",
+    "casamento_ambiguo": "Importação",
+    "cnpj_detectado": "Importação",
+    "nota_sem_data": "Importação",
+    "acerto_automatico": "Estoque",
+    "saida_sem_saldo": "Estoque",
+    "duplicata_confirmada": "Lançamento manual",
+}
+
+
+def exportar_pendencias(db: Session) -> BytesIO:
+    """Relatorio de erros/pendencias que o sistema encontrou em apuracao, estoque ou
+    importacao de dados - tudo que foi aceito mas alguem precisa olhar (Excecao), numa aba por
+    area e um resumo no topo."""
+    linhas = db.execute(
+        select(Excecao, Nota).outerjoin(Nota, Nota.id == Excecao.nota_id)
+        .order_by(Excecao.resolvida, Excecao.criado_em.desc())).all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RESUMO"
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 16
+    linha = _titulo(ws, 1, "RELATÓRIO DE ERROS E PENDÊNCIAS", largura=2)
+    ws.cell(linha, 1, "Gerado em").font = Font(bold=True, size=9)
+    ws.cell(linha, 2, dt.datetime.now().strftime("%d/%m/%Y %H:%M"))
+    linha += 1
+    ws.cell(linha, 1, "Total de pendências").font = Font(bold=True, size=9)
+    ws.cell(linha, 2, len(linhas))
+    linha += 1
+    ws.cell(linha, 1, "Não resolvidas").font = Font(bold=True, size=9)
+    ws.cell(linha, 2, sum(1 for e, _ in linhas if not e.resolvida))
+    linha += 2
+    ws.cell(linha, 1, "Por área").font = Font(bold=True, size=10)
+    linha += 1
+    ws.cell(linha, 1, "Área").font = Font(bold=True, size=9)
+    ws.cell(linha, 2, "Pendências").font = Font(bold=True, size=9)
+    linha += 1
+    por_area: dict[str, int] = {}
+    for e, _ in linhas:
+        area = AREA_POR_TIPO.get(e.tipo, "Outros")
+        por_area[area] = por_area.get(area, 0) + 1
+    for area, n in sorted(por_area.items(), key=lambda x: -x[1]):
+        ws.cell(linha, 1, area)
+        ws.cell(linha, 2, n)
+        linha += 1
+
+    ws2 = wb.create_sheet("PENDÊNCIAS")
+    cab = ["ÁREA", "TIPO", "QUANDO", "RESOLVIDA", "NF", "OPERAÇÃO", "DESCRIÇÃO", "JUSTIFICATIVA",
+           "QUANTIDADE (KG)", "VALOR (R$)", "USUÁRIO"]
+    for i, (h, w) in enumerate(zip(cab, [16, 20, 14, 11, 10, 10, 60, 30, 16, 16, 14]), start=1):
+        c = ws2.cell(1, i, h)
+        c.font = Font(bold=True, size=9, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor=AZUL)
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        ws2.column_dimensions[get_column_letter(i)].width = w
+    ws2.row_dimensions[1].height = 26
+    r = 2
+    for e, nota in linhas:
+        ws2.cell(r, 1, AREA_POR_TIPO.get(e.tipo, "Outros"))
+        ws2.cell(r, 2, e.tipo)
+        ws2.cell(r, 3, e.criado_em).number_format = "DD/MM/YYYY HH:MM"
+        ws2.cell(r, 4, "SIM" if e.resolvida else "NÃO")
+        ws2.cell(r, 5, nota.numero if nota else None)
+        ws2.cell(r, 6, ("ENTRADA" if nota.tipo == "E" else "SAÍDA") if nota else None)
+        ws2.cell(r, 7, e.descricao)
+        ws2.cell(r, 8, e.justificativa)
+        ws2.cell(r, 9, float(e.quantidade) if e.quantidade else None).number_format = PESO
+        ws2.cell(r, 10, float(e.valor) if e.valor else None).number_format = DINHEIRO
+        ws2.cell(r, 11, e.criado_por)
+        for col in range(1, 12):
+            ws2.cell(r, col).border = BORDA
+        r += 1
     ws2.freeze_panes = "A2"
     ws2.auto_filter.ref = f"A1:K{r-1}"
 

@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..services.exportacao import exportar_apuracao, exportar_estoque
+from ..services.exportacao import exportar_apuracao, exportar_estoque, exportar_pendencias
 
 router = APIRouter(prefix="/exportar", tags=["exportacao"])
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -26,3 +26,9 @@ def apuracao(competencia: str, db: Session = Depends(get_db)):
 def estoque(de: dt.date | None = None, ate: dt.date | None = None, db: Session = Depends(get_db)):
     ref = (ate or dt.date.today()).strftime("%Y%m%d")
     return _arquivo(exportar_estoque(db, de, ate), f"Estoque Fiscal Importado {ref}.xlsx")
+
+
+@router.get("/pendencias")
+def pendencias(db: Session = Depends(get_db)):
+    ref = dt.date.today().strftime("%Y%m%d")
+    return _arquivo(exportar_pendencias(db), f"Relatorio de Erros e Pendencias {ref}.xlsx")

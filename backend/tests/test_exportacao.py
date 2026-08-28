@@ -2,7 +2,7 @@
 import openpyxl
 import pytest
 
-from app.services.exportacao import exportar_apuracao, exportar_estoque
+from app.services.exportacao import exportar_apuracao, exportar_estoque, exportar_pendencias
 
 GABARITO_BLOCOS = {"2": 2045095.20, "3": 1455407.20}
 
@@ -71,3 +71,15 @@ def test_exportacao_de_estoque(db):
     assert "SUCATA DE ALUMINIO" in produtos and "TOTAL" in produtos
     mov = wb["MOVIMENTAÇÃO"]
     assert mov.max_row > 900        # os 6 anos, linha a linha
+
+
+def test_relatorio_de_erros_agrupa_por_area(db):
+    """O historico migrado ja' tem pendencia de estoque (acerto automatico) e de importacao
+    (nota sem data) - o relatorio precisa separar isso, nao virar lista solta."""
+    wb = openpyxl.load_workbook(exportar_pendencias(db))
+    assert wb.sheetnames == ["RESUMO", "PENDÊNCIAS"]
+    resumo = [c.value for c in wb["RESUMO"]["A"] if isinstance(c.value, str)]
+    assert "Estoque" in resumo or any("Estoque" in (t or "") for t in resumo)
+    ws = wb["PENDÊNCIAS"]
+    areas = {ws.cell(r, 1).value for r in range(2, ws.max_row + 1)}
+    assert "Estoque" in areas and "Importação" in areas
