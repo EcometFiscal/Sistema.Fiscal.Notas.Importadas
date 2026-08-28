@@ -1,5 +1,6 @@
 """Importacao por XML: o que o sistema faz com o pacote que sai do sistema atual."""
 import datetime as dt
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -266,6 +267,34 @@ def test_cancelamento_com_raiz_maiuscula_ainda_funciona(cliente, db):
     _sobe(cliente, {"ev.xml": evento_maiusculo})
     nota = db.execute(select(Nota).where(Nota.chave_acesso == ch)).scalars().one()
     assert nota.status == "cancelada"
+
+
+def test_pacote_com_varias_notas_do_mesmo_produto_recalcula_uma_vez_so(cliente):
+    """Reler o historico inteiro do produto por nota (em vez de uma vez por pacote) era o que
+    estourava o timeout da importacao em producao - um pacote de mes com dezenas de notas do
+    mesmo produto refazia o PEPS inteiro dezenas de vezes (Victor, 28/08/2026)."""
+    arquivos = {f"n{i}.xml": nfe(9720 + i, data=HOJE, produto="SUCATA DE ALUMINIO",
+                                 ncm="76020000", quantidade=100 + i, valor=2000 + i * 10)
+               for i in range(5)}
+    with patch("app.services.estoque.recalcular_varios") as mock_recalc:
+        lote = _sobe(cliente, arquivos)
+    assert lote["importadas"] == 5
+    assert mock_recalc.call_count == 1                       # uma chamada so' pro pacote inteiro
+    produtos_chamados = set(mock_recalc.call_args[0][1])
+    assert len(produtos_chamados) == 1                        # um produto so', mesmo com 5 notas
+
+
+def test_importar_nota_direto_sem_cache_recalcula_na_hora(db):
+    """scripts/pasta_vigiada.py chama importar_nota() direto, nota por nota, sem passar por
+    importar_zip - continua precisando do recalculo imediato (nao e' pacote, nao ha' um "final
+    do lote" que faca isso depois)."""
+    nf = ler(nfe(9740, data=HOJE, produto="SUCATA DE COBRE", ncm="74040000", aliquota=12.0,
+                 quantidade=50, valor=1000))
+    r = imp.importar_nota(db, nf, "teste", "teste-direto")
+    db.commit()
+    assert r.situacao == "importada"
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == r.nota_id)).scalars().one()
+    assert item.custo_total is not None       # custeio ja' rodou, sem precisar de importar_zip
 
 
 def test_zip_com_subpasta_e_zip_aninhado(cliente):

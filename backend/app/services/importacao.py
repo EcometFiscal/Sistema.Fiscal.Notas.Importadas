@@ -116,20 +116,29 @@ def derivar_bloco(db: Session, ncm: str | None, uf_contraparte: str | None, data
 
 
 def _parceiro(db: Session, cnpj: str | None, nome: str | None, uf: str | None,
-              exterior: bool, papel: str) -> Parceiro | None:
+              exterior: bool, papel: str, cache: "CacheLote | None" = None) -> Parceiro | None:
     """Casa por CNPJ; se nao houver, casa pelo nome e APROVEITA para gravar o CNPJ que faltava
     nos 60 parceiros vindos da planilha."""
     nome_limpo = " ".join((nome or "").replace("\xa0", " ").split()).upper() or None
     p = None
-    if cnpj:
-        p = db.execute(select(Parceiro).where(Parceiro.cnpj == cnpj)).scalars().first()
-    if p is None and nome_limpo:
-        p = db.execute(select(Parceiro).where(Parceiro.nome == nome_limpo)).scalars().first()
-    if p is None and nome_limpo:
-        for cand in db.execute(select(Parceiro)).scalars():
-            if nome_limpo in (cand.variantes or "").upper() or nome_limpo == cand.nome:
-                p = cand
-                break
+    if cache is not None:
+        p = (cache.parceiros_cnpj.get(cnpj) if cnpj else None) or \
+            (cache.parceiros_nome.get(nome_limpo) if nome_limpo else None)
+        if p is None and nome_limpo:
+            for cand in cache.parceiros_nome.values():
+                if nome_limpo in (cand.variantes or "").upper():
+                    p = cand
+                    break
+    else:
+        if cnpj:
+            p = db.execute(select(Parceiro).where(Parceiro.cnpj == cnpj)).scalars().first()
+        if p is None and nome_limpo:
+            p = db.execute(select(Parceiro).where(Parceiro.nome == nome_limpo)).scalars().first()
+        if p is None and nome_limpo:
+            for cand in db.execute(select(Parceiro)).scalars():
+                if nome_limpo in (cand.variantes or "").upper() or nome_limpo == cand.nome:
+                    p = cand
+                    break
     if p is None:
         if not nome_limpo:
             return None
@@ -137,9 +146,15 @@ def _parceiro(db: Session, cnpj: str | None, nome: str | None, uf: str | None,
                      status="do_xml")
         db.add(p)
         db.flush()
+        if cache is not None:
+            cache.parceiros_nome[p.nome] = p
+            if p.cnpj:
+                cache.parceiros_cnpj[p.cnpj] = p
         return p
     if cnpj and not p.cnpj:
         p.cnpj = cnpj                # o XML preenche o que a planilha nunca teve
+        if cache is not None:
+            cache.parceiros_cnpj[cnpj] = p
     if uf and not p.uf:
         p.uf = uf
     if p.papel and papel and p.papel != papel:
@@ -147,23 +162,71 @@ def _parceiro(db: Session, cnpj: str | None, nome: str | None, uf: str | None,
     return p
 
 
-def _produto(db: Session, descricao: str, ncm: str | None) -> tuple[Produto, str | None]:
+def _produto(db: Session, descricao: str, ncm: str | None,
+             cache: "CacheLote | None" = None) -> tuple[Produto, str | None]:
     desc = " ".join((descricao or "").replace("\xa0", " ").split()).upper()
-    p = db.execute(select(Produto).where(Produto.descricao == desc)).scalars().first()
+    p = cache.produtos_desc.get(desc) if cache is not None else \
+        db.execute(select(Produto).where(Produto.descricao == desc)).scalars().first()
     if p:
         if ncm and not p.ncm:
             p.ncm = ncm
         return p, None
     if ncm:
-        iguais = db.execute(select(Produto).where(Produto.ncm == ncm)).scalars().all()
+        iguais = cache.produtos_ncm.get(ncm, []) if cache is not None else \
+            db.execute(select(Produto).where(Produto.ncm == ncm)).scalars().all()
         if len(iguais) == 1:
             return iguais[0], (f"Produto '{desc}' casado com '{iguais[0].descricao}' pelo NCM {ncm}. "
                                "Confirme se e' o mesmo produto.")
     p = Produto(descricao=desc, ncm=ncm, status="do_xml")
     db.add(p)
     db.flush()
+    if cache is not None:
+        cache.produtos_desc[p.descricao] = p
+        cache.produtos_ncm.setdefault(p.ncm, []).append(p)
     return p, (f"Produto '{desc}' nao existia no cadastro e foi criado a partir do XML "
                f"(NCM {ncm or 'nao informado'}). Confirme antes de apurar.")
+
+
+class CacheLote:
+    """Memoria do lote inteiro. Sem isto, cada nota do pacote reabre as mesmas perguntas ao
+    banco - CNPJ, chave duplicada, parceiro, produto, competencia fechada, candidata historica -
+    e em banco remoto o custo nao e' a consulta, e' a ida e volta pela rede repetida centenas
+    de vezes."""
+
+    def __init__(self, db: Session):
+        self.db = db
+        self.cnpj = cnpj_empresa(db)
+        self.chaves: dict[str, tuple[int, str]] = {
+            c: (i, t) for i, t, c in db.execute(
+                select(Nota.id, Nota.tipo, Nota.chave_acesso).where(Nota.chave_acesso.is_not(None)))}
+        self.parceiros_cnpj: dict[str, Parceiro] = {}
+        self.parceiros_nome: dict[str, Parceiro] = {}
+        for p in db.execute(select(Parceiro)).scalars():
+            if p.cnpj:
+                self.parceiros_cnpj[p.cnpj] = p
+            self.parceiros_nome[p.nome] = p
+        self.produtos_desc: dict[str, Produto] = {}
+        self.produtos_ncm: dict[str, list[Produto]] = {}
+        for pr in db.execute(select(Produto)).scalars():
+            self.produtos_desc[pr.descricao] = pr
+            self.produtos_ncm.setdefault(pr.ncm, []).append(pr)
+        self.competencias: dict[str, tuple[bool, object, object]] = {}
+        # Notas migradas sem chave, indexadas por (tipo,numero,serie,data_mov) - o casamento
+        # historico tambem nao pode voltar ao banco por nota. Uma candidata usada some do indice
+        # pra nao ser oferecida de novo a outro arquivo do mesmo pacote.
+        self.historico_index: dict[tuple, list[Nota]] = {}
+        for n in db.execute(select(Nota).where(Nota.chave_acesso.is_(None))).scalars():
+            self.historico_index.setdefault((n.tipo, n.numero, n.serie, n.data_mov), []).append(n)
+        self.produtos_afetados: set[int] = set()
+
+    def fechada(self, data: dt.date) -> tuple[bool, object, object]:
+        comp = fec.competencia_de(data)
+        if comp not in self.competencias:
+            reg = fec.registro(self.db, comp)
+            self.competencias[comp] = (
+                (True, reg.fechada_em, reg.fechada_por) if reg and reg.status == "fechada"
+                else (False, None, None))
+        return self.competencias[comp]
 
 
 TOLERANCIA_CENTAVOS = 0.01
@@ -173,11 +236,14 @@ def _valor_compativel(a: float | None, b: float | None) -> bool:
     return a is not None and b is not None and abs(float(a) - float(b)) <= TOLERANCIA_CENTAVOS
 
 
-def buscar_candidatas_historico(db: Session, nf: NotaFiscal, tipo: str) -> list[Nota]:
+def buscar_candidatas_historico(db: Session, nf: NotaFiscal, tipo: str,
+                                cache: "CacheLote | None" = None) -> list[Nota]:
     """Casa o XML com uma nota migrada da planilha (sem chave de acesso, porque a planilha
     nunca teve esse campo) pelo tipo, numero, serie e data_mov. Sem isto, importar hoje o XML
     de um mes ja' migrado duplicaria tudo: a deduplicacao normal (por chave_acesso) nao teria
     nada pra comparar, porque a nota migrada nao tem chave."""
+    if cache is not None:
+        return list(cache.historico_index.get((tipo, nf.numero, nf.serie or "1", nf.data_emissao), []))
     return db.execute(
         select(Nota).where(Nota.chave_acesso.is_(None), Nota.tipo == tipo,
                            Nota.numero == nf.numero, Nota.serie == (nf.serie or "1"),
@@ -186,11 +252,12 @@ def buscar_candidatas_historico(db: Session, nf: NotaFiscal, tipo: str) -> list[
 
 
 def _dados_fiscais_item(db: Session, item, tipo: str, natureza: str, uf_contraparte: str | None,
-                        data: dt.date) -> tuple[Produto, str | None, list[str]]:
+                        data: dt.date,
+                        cache: "CacheLote | None" = None) -> tuple[Produto, str | None, list[str]]:
     """Produto, bloco do TTD e pendencias de um item do XML. Usada tanto para nota nova quanto
     para complementar uma nota migrada - as duas trilhas nunca podem divergir na regra que
     decide o bloco, ou a apuracao do historico complementado deixa de bater com a planilha."""
-    produto, aviso = _produto(db, item.descricao, item.ncm)
+    produto, aviso = _produto(db, item.descricao, item.ncm, cache)
     pendencias = [aviso] if aviso else []
     bloco = None
     origem_importada = (item.origem or "") in ORIGEM_IMPORTADA_TTD
@@ -206,7 +273,8 @@ def _dados_fiscais_item(db: Session, item, tipo: str, natureza: str, uf_contrapa
 
 
 def _agrupar_itens_por_produto(db: Session, nf: NotaFiscal, tipo: str, natureza: str,
-                               uf_contraparte: str | None) -> tuple[dict[int, dict], list[str]]:
+                               uf_contraparte: str | None,
+                               cache: "CacheLote | None" = None) -> tuple[dict[int, dict], list[str]]:
     """Agrupa os itens do XML pelo produto que _dados_fiscais_item resolve. A granularidade do
     lote no XML nao importa pra casar com a nota migrada (a planilha so' tem um item por
     produto) - Victor, 28/08/2026. Produto/NCM/origem/aliquota/CST/bloco inconsistentes entre
@@ -215,7 +283,7 @@ def _agrupar_itens_por_produto(db: Session, nf: NotaFiscal, tipo: str, natureza:
     pendencias: list[str] = []
     for item in nf.itens:
         produto, bloco, avisos = _dados_fiscais_item(db, item, tipo, natureza, uf_contraparte,
-                                                      nf.data_emissao)
+                                                      nf.data_emissao, cache)
         pendencias.extend(avisos)
         fiscal = (item.ncm, item.origem, item.aliquota, item.cst, bloco)
         g = grupos.get(produto.id)
@@ -237,7 +305,8 @@ def _agrupar_itens_por_produto(db: Session, nf: NotaFiscal, tipo: str, natureza:
 
 
 def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, natureza: str,
-                           uf_contraparte: str | None, usuario: str) -> Resultado:
+                           uf_contraparte: str | None, usuario: str,
+                           cache: "CacheLote | None" = None) -> Resultado:
     """Preenche numa nota migrada da planilha os campos fiscais que so' o XML tem: chave de
     acesso, CFOP, natureza e, por item, NCM/origem/aliquota/CST/bloco. Quantidade e valor sao
     intocaveis - o que a planilha trouxe sobre peso e dinheiro e' o que vale pro estoque e pra
@@ -260,7 +329,7 @@ def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, n
         if uf_contraparte and not nota.parceiro.uf:
             nota.parceiro.uf = uf_contraparte
 
-    grupos, avisos = _agrupar_itens_por_produto(db, nf, nota.tipo, natureza, uf_contraparte)
+    grupos, avisos = _agrupar_itens_por_produto(db, nf, nota.tipo, natureza, uf_contraparte, cache)
     pendencias.extend(avisos)
 
     usados: set[int] = set()
@@ -301,15 +370,22 @@ def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, n
                      nf.chave, nf.numero, nota.tipo, nota.id)
 
 
-def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Resultado:
-    cnpj_nosso = cnpj_empresa(db)
+def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str,
+                  cache: "CacheLote | None" = None) -> Resultado:
+    cnpj_nosso = cache.cnpj if cache is not None else cnpj_empresa(db)
     if not cnpj_nosso:
         return Resultado("", "erro", "CNPJ da empresa nao configurado - defina em /api/configuracao")
 
-    ja = db.execute(select(Nota).where(Nota.chave_acesso == nf.chave)).scalars().first()
-    if ja:
-        return Resultado("", "duplicada", f"Chave ja' importada no lancamento #{ja.id}",
-                         nf.chave, nf.numero, ja.tipo, ja.id)
+    if cache is not None:
+        achou = cache.chaves.get(nf.chave)
+        if achou:
+            return Resultado("", "duplicada", f"Chave ja' importada no lancamento #{achou[0]}",
+                             nf.chave, nf.numero, achou[1], achou[0])
+    else:
+        ja = db.execute(select(Nota).where(Nota.chave_acesso == nf.chave)).scalars().first()
+        if ja:
+            return Resultado("", "duplicada", f"Chave ja' importada no lancamento #{ja.id}",
+                             nf.chave, nf.numero, ja.tipo, ja.id)
 
     if nf.situacao and nf.situacao not in ("100", "150"):
         return Resultado("", "ignorada", f"Protocolo com cStat {nf.situacao} (nao autorizada)",
@@ -333,10 +409,10 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
     if nf.emit_cnpj == cnpj_nosso:
         tipo = "S" if nf.tipo_nf == "1" else "E"
         parceiro = _parceiro(db, nf.dest_cnpj, nf.dest_nome, nf.dest_uf, nf.dest_exterior,
-                             "cliente" if tipo == "S" else "fornecedor")
+                             "cliente" if tipo == "S" else "fornecedor", cache)
     elif nf.dest_cnpj == cnpj_nosso:
         tipo = "E"
-        parceiro = _parceiro(db, nf.emit_cnpj, nf.emit_nome, nf.emit_uf, False, "fornecedor")
+        parceiro = _parceiro(db, nf.emit_cnpj, nf.emit_nome, nf.emit_uf, False, "fornecedor", cache)
     else:
         return Resultado("", "ignorada",
                          "NF-e nao e' do estabelecimento (nem emitente nem destinatario)",
@@ -353,19 +429,31 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
     # interestadual - vem do XML e, so' se faltar, do cadastro do parceiro.
     uf_contraparte = (nf.dest_uf if tipo == "S" else nf.emit_uf) or (parceiro.uf if parceiro else None)
 
-    try:
-        fec.exigir_aberta(db, nf.data_emissao)
-    except fec.CompetenciaFechada as e:
-        return Resultado("", "pendente", e.mensagem, nf.chave, nf.numero, tipo)
+    if cache is not None:
+        fechada, em, por = cache.fechada(nf.data_emissao)
+        if fechada:
+            return Resultado("", "pendente",
+                             fec.CompetenciaFechada(fec.competencia_de(nf.data_emissao), em,
+                                                    por).mensagem, nf.chave, nf.numero, tipo)
+    else:
+        try:
+            fec.exigir_aberta(db, nf.data_emissao)
+        except fec.CompetenciaFechada as e:
+            return Resultado("", "pendente", e.mensagem, nf.chave, nf.numero, tipo)
 
     if nf.data_emissao > dt.date.today():
         return Resultado("", "pendente", f"Data de emissao {nf.data_emissao:%d/%m/%Y} e' futura",
                          nf.chave, nf.numero, tipo)
 
-    candidatas = buscar_candidatas_historico(db, nf, tipo)
+    candidatas = buscar_candidatas_historico(db, nf, tipo, cache)
     if len(candidatas) == 1:
+        if cache is not None:
+            # Usada - some do indice pra nao ser oferecida de novo a outro arquivo do pacote,
+            # e ja entra em cache.chaves porque vai ganhar chave_acesso ao complementar.
+            cache.historico_index[(tipo, nf.numero, nf.serie or "1", nf.data_emissao)] = []
+            cache.chaves[nf.chave] = (candidatas[0].id, tipo)
         return complementar_historico(db, candidatas[0], nf, cfop, natureza, uf_contraparte,
-                                      usuario)
+                                      usuario, cache)
     if len(candidatas) > 1:
         nums = ", ".join(f"#{n.id} (NF {n.numero})" for n in candidatas)
         db.add(Excecao(tipo="casamento_ambiguo", descricao=(
@@ -384,12 +472,14 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
                 origem_registro=f"XML ({origem})", observacao=nf.natureza)
     db.add(nota)
     db.flush()
+    if cache is not None:
+        cache.chaves[nf.chave] = (nota.id, tipo)
 
     pendencias: list[str] = []
     produtos = []
     for item in nf.itens:
         produto, bloco, avisos = _dados_fiscais_item(db, item, tipo, natureza, uf_contraparte,
-                                                      nf.data_emissao)
+                                                      nf.data_emissao, cache)
         pendencias.extend(avisos)
         db.add(NotaItem(nota_id=nota.id, produto_id=produto.id, ncm=item.ncm,
                         origem_merc=item.origem, quantidade=item.quantidade, valor=item.valor,
@@ -398,7 +488,11 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
                         custo_unit=(item.valor / item.quantidade)
                         if tipo == "E" and item.quantidade else None))
         produtos.append(produto.id)
-        if tipo == "S" and natureza != "DEVOLUCAO":
+        # No lote (com cache), o saldo insuficiente e' detectado uma vez so' no recalculo final
+        # de custeio (que gera o acerto e a excecao) - checar aqui tambem seria a mesma consulta
+        # de saldo repetida por item, e o lancamento manual (sem cache) ja cobre esse aviso na
+        # hora, antes do recalculo rodar.
+        if cache is None and tipo == "S" and natureza != "DEVOLUCAO":
             disponivel = float(est.saldo(db, produto.id, nf.data_emissao))
             falta = item.quantidade - disponivel
             if falta > 0.0005:
@@ -407,12 +501,17 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
                     f"{disponivel:,.1f} kg na data. Acerto lançado automaticamente.")
     db.flush()
 
+    if cache is not None:
+        cache.produtos_afetados.update(produtos)
+    else:
+        est.recalcular_varios(db, produtos, usuario)
+
     for p in pendencias:
         db.add(Excecao(tipo="importacao_xml", nota_id=nota.id, descricao=p, criado_por=usuario))
 
     return Resultado("", "pendente" if pendencias else "importada",
                      "; ".join(pendencias) if pendencias else None,
-                     nf.chave, nf.numero, tipo, nota.id, produtos)
+                     nf.chave, nf.numero, tipo, nota.id)
 
 
 def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal") -> LoteImportacao:
@@ -460,10 +559,11 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
                 "operacao. Confirme na aba Importar XML se estiver errado."), criado_por=usuario))
             db.flush()
 
-    # Produtos afetados no pacote inteiro, recalculados uma vez so' no final - nao uma vez por
-    # nota. Reler o historico inteiro de um produto a cada nota nova dele (um pacote de mes pode
-    # trazer dezenas de notas do mesmo produto) e' o que estava estourando os 300s da funcao.
-    produtos_afetados: set[int] = set()
+    # Memoria do lote inteiro: CNPJ, chaves, parceiros, produtos, competencias fechadas e
+    # candidatas historicas carregados uma vez, nao reconsultados por nota. Numa base remota
+    # (Supabase) o custo e' a ida e volta pela rede, nao a consulta em si - um pacote de mes com
+    # dezenas de notas do mesmo produto ou parceiro nao pode pagar essa rede centenas de vezes.
+    cache = CacheLote(db)
 
     cancelamentos: list[tuple[str, str]] = []
     for nome_arq, dados in arquivos:
@@ -483,8 +583,7 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
             db.add(ArquivoImportado(lote_id=lote.id, arquivo=nome_arq, situacao="erro",
                                     motivo=str(e)))
             continue
-        r = importar_nota(db, nf, usuario, f"zip:{nome}")
-        produtos_afetados.update(r.produtos_afetados)
+        r = importar_nota(db, nf, usuario, f"zip:{nome}", cache)
         db.add(ArquivoImportado(lote_id=lote.id, arquivo=nome_arq, situacao=r.situacao,
                                 motivo=r.motivo, chave_acesso=r.chave, numero=r.numero,
                                 tipo=r.tipo, nota_id=r.nota_id))
@@ -499,13 +598,16 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
         if nota.status != "cancelada":
             nota.status = "cancelada"
             nota.observacao = ((nota.observacao or "") + " | CANCELADA pelo evento no XML").strip(" |")
-            produtos_afetados.update(i.produto_id for i in nota.itens)
+            cache.produtos_afetados.update(i.produto_id for i in nota.itens)
         db.add(ArquivoImportado(lote_id=lote.id, arquivo=nome_arq, situacao="importada",
                                 chave_acesso=chave, nota_id=nota.id,
                                 motivo="Cancelamento aplicado"))
 
+    # Custeio uma vez por lote, para todos os produtos tocados - nao uma vez por nota. Reler o
+    # historico inteiro de um produto a cada nota nova dele (um pacote de mes pode trazer dezenas
+    # de notas do mesmo produto) e' o que estava estourando os 300s da funcao.
     db.flush()
-    est.recalcular_varios(db, produtos_afetados, usuario)
+    est.recalcular_varios(db, cache.produtos_afetados, usuario)
     db.flush()
     contagem = {}
     for a in db.execute(select(ArquivoImportado)
