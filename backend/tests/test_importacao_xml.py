@@ -43,6 +43,17 @@ def test_xml_ilegivel_e_recusado():
         ler(b"<html>isto nao e uma nota</html>")
 
 
+def test_le_nfref_da_nota_referenciada():
+    ref = chave(6576, "98765432000188")
+    nf = ler(nfe(6579, refs=[ref]))
+    assert nf.refs == [ref]
+
+
+def test_sem_nfref_a_lista_vem_vazia():
+    nf = ler(nfe(8001))
+    assert nf.refs == []
+
+
 # ------------------------------------------------------- bloco do TTD (por NCM + ambito)
 @pytest.mark.parametrize("ncm,uf,esperado", [
     ("74040000", "SC", None),     # cobre interno: aliquota 0, fora do beneficio
@@ -170,6 +181,70 @@ def test_devolucao_com_nome_de_produto_diferente_casa_pelo_ncm_e_cst(cliente, db
     item = db.execute(select(NotaItem).where(NotaItem.nota_id == nota.id)).scalars().one()
     assert item.produto.descricao == "SUCATA DE ALUMINIO"      # casou pelo NCM, nao pelo nome
     assert item.cst_completo == "100"                          # origem 1 + CST 00
+
+
+@pytest.mark.parametrize("cfop", ["2949", "1949"])
+def test_cfop_2949_e_1949_sao_devolucao_por_confirmacao_do_cliente(cliente, db, cfop):
+    """CFOP generico de 'outras entradas' - Victor, 28/08/2026: na operacao da Ecomet esse CFOP
+    de entrada e' sempre usado pra estornar uma venda, mesmo sem finNFe=4 e sem NFref. Nao e' uma
+    regra geral de mercado (esses CFOPs podem ser outra coisa em outra empresa) - e' a propria
+    empresa confirmando o uso dela."""
+    numero = 6590 if cfop == "2949" else 6591
+    lote = _sobe(cliente, {"e.xml": nfe(
+        numero, cfop=cfop, fin="1", aliquota=4.0, origem="1",
+        emit_cnpj="98765432000188", dest_cnpj=CNPJ_EMPRESA,
+        produto="SUCATA DE ALUMINIO", ncm="76020000",
+        quantidade=500, valor=9000.0, data=ONTEM)})
+    assert lote["arquivos"][0]["situacao"] != "erro"
+    nota = db.execute(select(Nota).where(Nota.numero == numero)).scalars().one()
+    assert nota.tipo == "E" and nota.natureza == "DEVOLUCAO"
+
+
+def test_estorno_referenciado_e_devolucao_mesmo_com_ajuste_e_cfop_fora_da_lista(cliente, db):
+    """Caso real: NF 6579/ago-2026, estorno da NF 6576 porque ela nao foi cancelada dentro do
+    prazo da SEFAZ (CFOP 2949, que hoje ja' esta' em CFOP_DEVOLUCAO). Aqui testamos a rede de
+    seguranca do NFref com um CFOP generico que NAO esta' na lista - pra cobrir um estorno futuro
+    que venha com um CFOP que a Ecomet ainda nao usou: finNFe=3 ('ajuste') referenciando a NF de
+    venda original e' o sinal de que a nota so' existe pra desfazer outra. Sem isto a nota entra
+    como COMPRA, nunca passa pelo bloco do TTD, e o credito presumido da venda original nunca e'
+    estornado."""
+    chave_original = chave(6576, "98765432000188")
+    lote = _sobe(cliente, {"e.xml": nfe(
+        6579, cfop="2101", fin="3", tipo_nf="0", aliquota=4.0, origem="1",
+        nat_op="ESTORNO DE NFE NAO CANCELADA DENTRO DO PRAZO",
+        emit_cnpj=CNPJ_EMPRESA, dest_cnpj="98765432000188",
+        produto="SUCATA DE ALUMINIO", ncm="76020000",
+        quantidade=6252, valor=281864.0, data=ONTEM, refs=[chave_original])})
+    assert lote["arquivos"][0]["situacao"] != "erro"
+    nota = db.execute(select(Nota).where(Nota.numero == 6579)).scalars().one()
+    assert nota.tipo == "E" and nota.natureza == "DEVOLUCAO"
+    excecoes = db.execute(select(Excecao).where(Excecao.nota_id == nota.id)).scalars().all()
+    assert any("NFref" in e.descricao and "6579" in e.descricao for e in excecoes), (
+        "a classificacao por NFref deveria abrir uma pendencia informativa, nunca corrigir em silencio")
+    # A nota e' autoemitida (emit_cnpj == cnpj da empresa, tpNF=0): quem NAO e' a gente e' o
+    # destinatario (SP), nao o emitente (SC, que somos nos mesmos). Se a UF da contraparte
+    # usasse o emitente por engano, o item cairia como operacao interna (SC), sem beneficio pro
+    # aluminio, o bloco ficaria None e o credito presumido continuaria sem ser estornado mesmo
+    # com natureza=DEVOLUCAO.
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == nota.id)).scalars().first()
+    assert item.bloco_ttd == "2", (
+        "bloco do TTD nao derivado - a UF da contraparte de uma entrada autoemitida precisa vir "
+        "do destinatario, nao do emitente (somos nos)")
+
+
+def test_estorno_referenciado_sem_finalidade_ajuste_nao_vira_devolucao(cliente, db):
+    """Complementar (finNFe=2) tambem referencia a NF original em NFref, mas nao e' estorno -
+    e' acrescimo de valor/quantidade a uma nota ja lancada. NFref sozinho nao pode bastar, e o
+    CFOP usado (6101) nao esta' em CFOP_DEVOLUCAO."""
+    chave_original = chave(7000, "98765432000188")
+    lote = _sobe(cliente, {"c.xml": nfe(
+        7001, cfop="6101", fin="2", aliquota=4.0, origem="1",
+        emit_cnpj="98765432000188", dest_cnpj=CNPJ_EMPRESA,
+        produto="SUCATA DE ALUMINIO", ncm="76020000",
+        quantidade=100, valor=2000.0, data=ONTEM, refs=[chave_original])})
+    assert lote["importadas"] == 1
+    nota = db.execute(select(Nota).where(Nota.numero == 7001)).scalars().one()
+    assert nota.tipo == "E" and nota.natureza != "DEVOLUCAO"
 
 
 def test_chave_repetida_nao_duplica(cliente):

@@ -16,19 +16,21 @@ def nfe(numero: int, *, tipo_nf="1", cfop="5101", aliquota=4.0, origem="1",
         emit_cnpj=CNPJ_EMPRESA, emit_uf="SC", dest_cnpj="98765432000188",
         dest_nome="ALUNOVA REFUSAO LTDA", dest_uf="SP", produto="SUCATA DE ALUMINIO",
         ncm="76020000", quantidade=1000.0, valor=20000.0, data=None, fin="1",
-        cstat="100", com_protocolo=True, chave_custom=None, cst="00") -> str:
+        cstat="100", com_protocolo=True, chave_custom=None, cst="00",
+        nat_op="VENDA DE MERCADORIA", refs: list[str] | None = None) -> str:
     data = data or dt.date(2026, 8, 10)
     ch = chave_custom or chave(numero, emit_cnpj)
     vicms = round(valor * aliquota / 100, 2)
     prot = (f'<protNFe versao="4.00"><infProt><chNFe>{ch}</chNFe><cStat>{cstat}</cStat>'
             f'<xMotivo>Autorizado o uso da NF-e</xMotivo></infProt></protNFe>'
             if com_protocolo else "")
+    nfref = "".join(f"<NFref><refNFe>{r}</refNFe></NFref>" for r in (refs or []))
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
  <NFe><infNFe Id="NFe{ch}" versao="4.00">
-  <ide><cUF>42</cUF><natOp>VENDA DE MERCADORIA</natOp><mod>55</mod><serie>1</serie>
+  <ide><cUF>42</cUF><natOp>{nat_op}</natOp><mod>55</mod><serie>1</serie>
    <nNF>{numero}</nNF><dhEmi>{data.isoformat()}T10:15:00-03:00</dhEmi>
-   <tpNF>{tipo_nf}</tpNF><idDest>2</idDest><finNFe>{fin}</finNFe></ide>
+   <tpNF>{tipo_nf}</tpNF><idDest>2</idDest><finNFe>{fin}</finNFe>{nfref}</ide>
   <emit><CNPJ>{emit_cnpj}</CNPJ><xNome>MINHA EMPRESA LTDA</xNome>
    <enderEmit><UF>{emit_uf}</UF></enderEmit></emit>
   <dest><CNPJ>{dest_cnpj}</CNPJ><xNome>{dest_nome}</xNome>

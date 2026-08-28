@@ -24,8 +24,22 @@ from . import estoque as est
 from . import fechamento as fec
 from .xml_nfe import NotaFiscal, XmlInvalido, evento_cancelamento, evento_outro, ler
 
-# CFOPs de devolucao de venda que voltam como entrada
-CFOP_DEVOLUCAO = {"1201", "1202", "1410", "1411", "2201", "2202", "2410", "2411"}
+# CFOPs de devolucao de venda que voltam como entrada. 1949 e 2949 (CFOP generico de "outras
+# entradas nao especificadas") entraram aqui em 28/08/2026 a pedido do Victor: na operacao da
+# Ecomet, e' o CFOP que ele usa sempre que precisa estornar uma venda (a NF 6579, CFOP 2949,
+# estornando a NF 6576, e' um exemplo real) - diferente de outras empresas, onde 1949/2949 podem
+# ser qualquer coisa, aqui e' a propria empresa confirmando o uso. Se um dia isso deixar de ser
+# verdade (2949/1949 passar a ser usado tambem pra outra coisa que nao devolucao), esta lista
+# precisa ser revista.
+CFOP_DEVOLUCAO = {"1201", "1202", "1410", "1411", "1949", "2201", "2202", "2410", "2411", "2949"}
+# Estorno de venda nao cancelada dentro do prazo da SEFAZ: a empresa emite uma entrada com
+# finNFe=3 ("ajuste") em vez de finNFe=4 ("devolucao"), referenciando a NF de venda original em
+# NFref - Victor, 28/08/2026, achado a partir da NF 6579 (CFOP 2949, estornando a NF 6576; hoje
+# CFOP 2949 ja' cai direto em CFOP_DEVOLUCAO acima). Fica como rede de seguranca pra um estorno
+# que venha com outro CFOP que a empresa ainda nao usou: NFref preenchido numa entrada de ajuste
+# e' o sinal confiavel de que a nota so' existe pra desfazer outra. Sem isto (e sem o CFOP na
+# lista) a nota entra como COMPRA, nunca passa pelo bloco do TTD, e o credito presumido da venda
+# original nunca e' estornado.
 # Mercadoria importada, para efeito do TTD: so' orig 1 (importacao direta) e 6 (importacao com
 # industrializacao interna, sem similar nacional). Nao usar a lista mais larga de origens da
 # tabela de ICMS (2,3,7,8) - essa e' outra coisa, nao decide TTD.
@@ -305,13 +319,14 @@ def _agrupar_itens_por_produto(db: Session, nf: NotaFiscal, tipo: str, natureza:
 
 
 def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, natureza: str,
-                           uf_contraparte: str | None, usuario: str,
-                           cache: "CacheLote | None" = None) -> Resultado:
+                           uf_contraparte: str | None, usuario: str, cnpj_nosso: str | None = None,
+                           cache: "CacheLote | None" = None,
+                           avisos_extra: list[str] = ()) -> Resultado:
     """Preenche numa nota migrada da planilha os campos fiscais que so' o XML tem: chave de
     acesso, CFOP, natureza e, por item, NCM/origem/aliquota/CST/bloco. Quantidade e valor sao
     intocaveis - o que a planilha trouxe sobre peso e dinheiro e' o que vale pro estoque e pra
     apuracao ja' fechados; o XML so' acrescenta o que faltava."""
-    pendencias: list[str] = []
+    pendencias: list[str] = list(avisos_extra)
     if not _valor_compativel(nota.valor_total, nf.valor_total):
         pendencias.append(
             f"Valor do XML (R$ {nf.valor_total or 0:,.2f}) diverge do valor migrado da planilha "
@@ -323,7 +338,10 @@ def complementar_historico(db: Session, nota: Nota, nf: NotaFiscal, cfop: str, n
     nota.natureza = natureza
     nota.observacao = ((nota.observacao or "") + " | complementada por XML").strip(" |")
     if nota.parceiro:
-        contraparte_cnpj = nf.dest_cnpj if nota.tipo == "S" else nf.emit_cnpj
+        # Quem NAO e' a gente decide o CNPJ da contraparte - nao "nota.tipo == S". Numa entrada
+        # autoemitida (emit_cnpj == cnpj_nosso, o padrao de estorno da NF 6579/ago-2026) o tipo
+        # e' "E" mas o emitente somos nos mesmos; a contraparte e' o destinatario.
+        contraparte_cnpj = nf.dest_cnpj if nf.emit_cnpj == cnpj_nosso else nf.emit_cnpj
         if contraparte_cnpj and not nota.parceiro.cnpj:
             nota.parceiro.cnpj = contraparte_cnpj
         if uf_contraparte and not nota.parceiro.uf:
@@ -419,15 +437,30 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str,
                          nf.chave, nf.numero)
 
     cfop = nf.cfop_principal or ""
+    avisos_natureza: list[str] = []
     if tipo == "E":
-        natureza = ("DEVOLUCAO" if (cfop in CFOP_DEVOLUCAO or nf.finalidade == "4")
+        estorno_referenciado = nf.finalidade == "3" and bool(nf.refs)
+        natureza = ("DEVOLUCAO" if (cfop in CFOP_DEVOLUCAO or nf.finalidade == "4"
+                                    or estorno_referenciado)
                     else "IMPORTACAO" if cfop.startswith("3") else "COMPRA")
+        if estorno_referenciado and cfop not in CFOP_DEVOLUCAO and nf.finalidade != "4":
+            avisos_natureza.append(
+                f"NF {nf.numero}: finNFe=3 (ajuste) referenciando a NF-e {nf.refs[0]} (NFref) - "
+                f"classificada como DEVOLUCAO por ser um estorno (padrao 'NFe nao cancelada dentro "
+                f"do prazo'), embora o CFOP ({cfop or 'sem CFOP'}) nao esteja na lista de "
+                f"devolucao. Confira se a NF referenciada ja' entrou na apuracao e se o credito "
+                f"presumido dela precisa ser estornado.")
     else:
         natureza = "DEVOLUCAO" if nf.finalidade == "4" else "VENDA"
 
     # Contraparte da operacao (quem nao e' a gente nesta NF-e) decide o ambito interna/
-    # interestadual - vem do XML e, so' se faltar, do cadastro do parceiro.
-    uf_contraparte = (nf.dest_uf if tipo == "S" else nf.emit_uf) or (parceiro.uf if parceiro else None)
+    # interestadual - vem do XML e, so' se faltar, do cadastro do parceiro. Nao pode usar
+    # "tipo" pra decidir de que lado esta' a contraparte: numa entrada de estorno auto-emitida
+    # (emit_cnpj == cnpj_nosso, tpNF=0 - o padrao da NF 6579/ago-2026 que estorna a NF 6576) o
+    # tipo da' "E" mas quem NAO e' a gente e' o destinatario, nao o emitente. O criterio certo e'
+    # o mesmo que decidiu o parceiro acima: quem emitiu a nota.
+    uf_contraparte = ((nf.dest_uf if nf.emit_cnpj == cnpj_nosso else nf.emit_uf)
+                      or (parceiro.uf if parceiro else None))
 
     if cache is not None:
         fechada, em, por = cache.fechada(nf.data_emissao)
@@ -453,7 +486,7 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str,
             cache.historico_index[(tipo, nf.numero, nf.serie or "1", nf.data_emissao)] = []
             cache.chaves[nf.chave] = (candidatas[0].id, tipo)
         return complementar_historico(db, candidatas[0], nf, cfop, natureza, uf_contraparte,
-                                      usuario, cache)
+                                      usuario, cnpj_nosso, cache, avisos_extra=avisos_natureza)
     if len(candidatas) > 1:
         nums = ", ".join(f"#{n.id} (NF {n.numero})" for n in candidatas)
         db.add(Excecao(tipo="casamento_ambiguo", descricao=(
@@ -475,7 +508,7 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str,
     if cache is not None:
         cache.chaves[nf.chave] = (nota.id, tipo)
 
-    pendencias: list[str] = []
+    pendencias: list[str] = list(avisos_natureza)
     produtos = []
     for item in nf.itens:
         produto, bloco, avisos = _dados_fiscais_item(db, item, tipo, natureza, uf_contraparte,

@@ -92,6 +92,7 @@ class NotaFiscal:
     dest_exterior: bool
     valor_total: float | None
     situacao: str | None        # cStat do protocolo
+    refs: list[str] = field(default_factory=list)   # chaves de NFref (ide/NFref/refNFe)
     itens: list[ItemNFe] = field(default_factory=list)
     cancelada: bool = False
 
@@ -110,6 +111,19 @@ def _data(texto: str | None) -> dt.date | None:
         return None
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", texto)
     return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def _refs(ide) -> list[str]:
+    """Chaves das NF-e referenciadas em ide/NFref/refNFe. Pode haver mais de um grupo NFref;
+    ignoramos referencia a outro tipo de documento (refNF, refNFP, refCTe, refECF) - so' importa
+    quando a nota referenciada e' outra NF-e."""
+    refs = []
+    for filho in list(ide):
+        if _tag(filho) == "NFref":
+            chave_ref = _txt(filho, "refNFe")
+            if chave_ref:
+                refs.append(chave_ref)
+    return refs
 
 
 def ler(conteudo: bytes | str) -> NotaFiscal:
@@ -191,6 +205,7 @@ def ler(conteudo: bytes | str) -> NotaFiscal:
         dest_exterior=dest_ext,
         valor_total=_num(inf, "total", "ICMSTot", "vNF"),
         situacao=_txt(prot, "cStat") if prot is not None else None,
+        refs=_refs(ide),
         itens=itens,
     )
 
