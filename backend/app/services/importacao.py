@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -86,6 +86,11 @@ class Resultado:
     numero: int | None = None
     tipo: str | None = None
     nota_id: int | None = None
+    # Produtos cujo custeio PEPS precisa recalcular. Devolvido em vez de recalculado aqui dentro
+    # pra importar_zip juntar tudo do pacote e recalcular cada produto uma vez so' no final -
+    # nao uma vez por nota (um pacote com 40 notas do mesmo produto nao pode reler o historico
+    # inteiro do produto 40 vezes seguidas).
+    produtos_afetados: list[int] = field(default_factory=list)
 
 
 def derivar_bloco(db: Session, ncm: str | None, uf_contraparte: str | None, data: dt.date,
@@ -401,14 +406,13 @@ def importar_nota(db: Session, nf: NotaFiscal, usuario: str, origem: str) -> Res
                     f"{produto.descricao}: saída de {item.quantidade:,.1f} kg com saldo de "
                     f"{disponivel:,.1f} kg na data. Acerto lançado automaticamente.")
     db.flush()
-    est.recalcular_varios(db, produtos, usuario)
 
     for p in pendencias:
         db.add(Excecao(tipo="importacao_xml", nota_id=nota.id, descricao=p, criado_por=usuario))
 
     return Resultado("", "pendente" if pendencias else "importada",
                      "; ".join(pendencias) if pendencias else None,
-                     nf.chave, nf.numero, tipo, nota.id)
+                     nf.chave, nf.numero, tipo, nota.id, produtos)
 
 
 def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal") -> LoteImportacao:
@@ -456,6 +460,11 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
                 "operacao. Confirme na aba Importar XML se estiver errado."), criado_por=usuario))
             db.flush()
 
+    # Produtos afetados no pacote inteiro, recalculados uma vez so' no final - nao uma vez por
+    # nota. Reler o historico inteiro de um produto a cada nota nova dele (um pacote de mes pode
+    # trazer dezenas de notas do mesmo produto) e' o que estava estourando os 300s da funcao.
+    produtos_afetados: set[int] = set()
+
     cancelamentos: list[tuple[str, str]] = []
     for nome_arq, dados in arquivos:
         chave_cancelada = evento_cancelamento(dados)
@@ -475,6 +484,7 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
                                     motivo=str(e)))
             continue
         r = importar_nota(db, nf, usuario, f"zip:{nome}")
+        produtos_afetados.update(r.produtos_afetados)
         db.add(ArquivoImportado(lote_id=lote.id, arquivo=nome_arq, situacao=r.situacao,
                                 motivo=r.motivo, chave_acesso=r.chave, numero=r.numero,
                                 tipo=r.tipo, nota_id=r.nota_id))
@@ -489,11 +499,13 @@ def importar_zip(db: Session, conteudo: bytes, nome: str, usuario: str = "fiscal
         if nota.status != "cancelada":
             nota.status = "cancelada"
             nota.observacao = ((nota.observacao or "") + " | CANCELADA pelo evento no XML").strip(" |")
-            est.recalcular_varios(db, [i.produto_id for i in nota.itens], usuario)
+            produtos_afetados.update(i.produto_id for i in nota.itens)
         db.add(ArquivoImportado(lote_id=lote.id, arquivo=nome_arq, situacao="importada",
                                 chave_acesso=chave, nota_id=nota.id,
                                 motivo="Cancelamento aplicado"))
 
+    db.flush()
+    est.recalcular_varios(db, produtos_afetados, usuario)
     db.flush()
     contagem = {}
     for a in db.execute(select(ArquivoImportado)
