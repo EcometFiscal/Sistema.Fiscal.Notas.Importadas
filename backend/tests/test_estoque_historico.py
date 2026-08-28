@@ -31,6 +31,8 @@ def _saldo_planilha(db, produto_id):
 def test_saldo_por_produto_bate_com_o_painel(db):
     divergentes = []
     for produto in db.execute(select(Produto)).scalars():
+        if produto.descricao not in PAINEL:
+            continue    # produto novo, adicionado depois da migracao (ex.: Mini Lingote de Magnesio)
         esperado = PAINEL[produto.descricao]
         obtido = _saldo_planilha(db, produto.id)
         if produto.descricao == "SUCATA DE MAGNESIO":

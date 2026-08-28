@@ -17,16 +17,19 @@ from sqlalchemy.orm import Session
 
 from ..models import ApuracaoMes, Nota, NotaItem, Produto, RegraTTD
 
-# Regra real do TTD 409: por produto (NCM) e ambito da operacao, nao por CFOP. Cobre, aluminio
-# e magnesio saem do beneficio (aliquota 0, sem bloco) na operacao interna - so' tem linha para
-# interestadual. Silicio cobra igual nos dois ambitos, por isso tem as duas linhas.
+# Regra real do TTD 409: por produto (NCM) e ambito da operacao, nao por CFOP. Cobre e sucata
+# (aluminio, magnesio) saem do beneficio (aliquota 0, sem bloco) na operacao interna - so' tem
+# linha para interestadual. Silicio e os dois LINGOTES (aluminio e magnesio - Victor, 28/08/2026,
+# achado a partir da NF 6543) cobram igual nos dois ambitos, por isso tem as duas linhas cada.
 TABELA_TTD = [
     # ncm,        ambito,          bloco, descricao,                                   aliq,  presumido, carga
     ("74040000", "interestadual", "1", "Interestadual 12%",                        0.12, 0.114, 0.006),
     ("76020000", "interestadual", "2", "Interestadual - mercadoria importada 4%",  0.04, 0.030, 0.010),
     ("76011000", "interestadual", "2", "Interestadual - mercadoria importada 4%",  0.04, 0.030, 0.010),
+    ("76011000", "interna",       "2", "Interna - mercadoria importada 4%",        0.04, 0.030, 0.010),
     ("81042000", "interestadual", "2", "Interestadual - mercadoria importada 4%",  0.04, 0.030, 0.010),
     ("81041100", "interestadual", "2", "Interestadual - mercadoria importada 4%",  0.04, 0.030, 0.010),
+    ("81041100", "interna",       "2", "Interna - mercadoria importada 4%",        0.04, 0.030, 0.010),
     ("28046900", "interna",       "3", "Silicio metalico 12%",                     0.12, 0.099, 0.021),
     ("28046900", "interestadual", "3", "Silicio metalico 12%",                     0.12, 0.099, 0.021),
 ]
@@ -38,6 +41,7 @@ PRODUTO_NCM = {
     "LINGOTE DE ALUMINIO": "76011000",
     "SUCATA DE MAGNESIO": "81042000",
     "LINGOTE DE MAGNESIO": "81041100",
+    "MINI LINGOTE DE MAGNESIO": "81041100",
     "SILICIO METALICO": "28046900",
 }
 
@@ -53,13 +57,18 @@ def semear_regras(db: Session, inicio: dt.date = dt.date(2020, 1, 1)):
 
 
 def backfill_ncm_produtos(db: Session) -> int:
-    """Preenche o NCM cadastral dos 6 produtos conhecidos e propaga para nota_item que ainda
-    nao tem NCM. So' descritivo/relatorio - nunca mexe em bloco_ttd, valor ou aliquota, que sao
-    os campos que a apuracao soma."""
+    """Preenche o NCM cadastral dos produtos conhecidos da tabela do TTD e cria os que ainda nao
+    existem no cadastro (ex.: Mini Lingote de Magnesio, adicionado em 28/08/2026 - a NF 6543
+    tinha esse item casado por aproximacao com Lingote de Magnesio ate' ganhar cadastro proprio).
+    Nunca mexe em bloco_ttd, valor ou aliquota de nota_item, que sao os campos que a apuracao
+    soma - so' cadastro."""
     alterados = 0
     for descricao, ncm in PRODUTO_NCM.items():
         p = db.execute(select(Produto).where(Produto.descricao == descricao)).scalars().first()
-        if p and p.ncm != ncm:
+        if p is None:
+            db.add(Produto(descricao=descricao, ncm=ncm, unidade="KG", status="ativo"))
+            alterados += 1
+        elif p.ncm != ncm:
             p.ncm = ncm
             alterados += 1
     db.flush()

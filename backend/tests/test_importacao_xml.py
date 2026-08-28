@@ -58,10 +58,16 @@ def test_sem_nfref_a_lista_vem_vazia():
 @pytest.mark.parametrize("ncm,uf,esperado", [
     ("74040000", "SC", None),     # cobre interno: aliquota 0, fora do beneficio
     ("74040000", "SP", "1"),      # cobre interestadual: 12%/11,40%
-    ("76020000", "SC", None),     # aluminio interno: aliquota 0, fora do beneficio
-    ("76020000", "SP", "2"),      # aluminio interestadual: 4%/3%
+    ("76020000", "SC", None),     # sucata de aluminio interna: aliquota 0, fora do beneficio
+    ("76020000", "SP", "2"),      # sucata de aluminio interestadual: 4%/3%
     ("28046900", "SC", "3"),      # silicio interno: cobra igual
     ("28046900", "SP", "3"),      # silicio interestadual: cobra igual
+    # Lingote (aluminio e magnesio) cobra igual nos dois ambitos - diferente da sucata do mesmo
+    # metal. Achado a partir da NF 6543 (Victor, 28/08/2026), retroativo a 2020-01-01.
+    ("76011000", "SC", "2"),      # lingote de aluminio interno: 4%/3%, nao fica de fora
+    ("76011000", "SP", "2"),      # lingote de aluminio interestadual: 4%/3%
+    ("81041100", "SC", "2"),      # lingote de magnesio interno: 4%/3%, nao fica de fora
+    ("81041100", "SP", "2"),      # lingote de magnesio interestadual: 4%/3%
 ])
 def test_bloco_vem_do_ncm_e_do_ambito(db, ncm, uf, esperado):
     bloco, _ = imp.derivar_bloco(db, ncm, uf, dt.date(2026, 8, 10))
@@ -296,6 +302,22 @@ def test_produto_com_descricao_nova_mas_ncm_conhecido_casa_pelo_ncm(cliente, db)
     assert any("casado" in e.descricao and "NCM" in e.descricao for e in exc)
     assert not db.execute(select(Produto)
                           .where(Produto.descricao == "SUCATA DE COBRE MISTA")).scalars().first()
+
+
+def test_mini_lingote_de_magnesio_casa_exato_nao_pelo_ncm(cliente, db):
+    """Mini Lingote de Magnesio (NCM 81041100, adicionado 28/08/2026) e' cadastro proprio, com o
+    mesmo NCM de Lingote de Magnesio - precisa casar pela descricao exata, sem aviso de NCM, e a
+    regra e' igual a de Lingote: tributa dentro e fora do estado (achado a partir da NF 6543)."""
+    lote = _sobe(cliente, {"m.xml": nfe(8802, produto="MINI LINGOTE DE MAGNESIO", ncm="81041100",
+                                        cfop="5102", dest_uf="SC", aliquota=4.0, origem="1",
+                                        quantidade=200, valor=7400.0, data=HOJE)})
+    assert lote["importadas"] == 1
+    nota = db.execute(select(Nota).where(Nota.numero == 8802)).scalars().one()
+    item = db.execute(select(NotaItem).where(NotaItem.nota_id == nota.id)).scalars().one()
+    assert item.produto.descricao == "MINI LINGOTE DE MAGNESIO"
+    assert item.bloco_ttd == "2"                                 # interna, mas tributa mesmo assim
+    exc = db.execute(select(Excecao).where(Excecao.nota_id == nota.id)).scalars().all()
+    assert not any("casado" in e.descricao and "NCM" in e.descricao for e in exc)
 
 
 def test_xml_preenche_o_cnpj_que_a_planilha_nao_tinha(cliente, db):
