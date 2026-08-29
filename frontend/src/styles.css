@@ -86,6 +86,7 @@ th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacin
   color: var(--cinza); border-bottom: 1px solid var(--linha); padding: 8px 10px; white-space: nowrap; }
 td { padding: 9px 10px; border-bottom: 1px solid var(--linha); }
 tr:hover td { background: var(--papel-hover); }
+tr.ativo td { background: var(--verde-bg); }
 td.dir, th.dir { text-align: right; }
 .rolagem { overflow-x: auto; }
 

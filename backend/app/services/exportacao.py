@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import Excecao, Nota, NotaItem, Produto
+from ..models import Excecao, LoteImportacao, Nota, NotaItem, Produto
 from . import apuracao as ap
 from . import estoque as est
 from . import fechamento as fec
@@ -460,6 +460,111 @@ def exportar_pendencias(db: Session) -> BytesIO:
         r += 1
     ws2.freeze_panes = "A2"
     ws2.auto_filter.ref = f"A1:K{r-1}"
+
+    saida = BytesIO()
+    wb.save(saida)
+    saida.seek(0)
+    return saida
+
+
+# Cores da auditoria de importacao - decidem o que salta aos olhos ao conferir nota a nota contra
+# o pacote original: o que entrou na apuracao, o que precisa de uma olhada, e o que nem virou nota.
+COR_ENTROU_APURACAO = "FFDCEEDD"
+COR_A_CONFERIR = "FFFCE6C9"
+COR_NAO_IMPORTADO = "FFF8D0CC"
+
+
+def exportar_auditoria_lote(db: Session, lote: LoteImportacao) -> BytesIO:
+    """Auditoria nota a nota de um lote de importacao de XML: uma linha por item de cada arquivo
+    do pacote (ou uma linha soh do arquivo, quando ele nao virou nota), com a aliquota de ICMS do
+    XML e se aquele item entrou na apuracao do TTD (bloco_ttd preenchido) - pra conferir contra o
+    pacote original e achar nota que devia ter entrado e nao entrou, ou que entrou diferente do
+    esperado. Filtro automatico na aliquota pra agrupar por faixa na conferencia."""
+    cabecalhos = ["SITUAÇÃO", "ARQUIVO", "NF", "OPERAÇÃO", "NATUREZA", "CFOP", "PARCEIRO",
+                  "PRODUTO", "NCM", "QTD (KG)", "VALOR (R$)", "ALÍQUOTA ICMS (XML)", "BLOCO TTD",
+                  "ALÍQUOTA OFICIAL DO BLOCO", "ENTROU NA APURAÇÃO?", "MOTIVO / OBSERVAÇÃO",
+                  "NOTA #ID"]
+    larguras = [16, 34, 10, 10, 12, 8, 30, 26, 10, 12, 14, 16, 10, 18, 16, 46, 10]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "AUDITORIA"
+    for i, (h, w) in enumerate(zip(cabecalhos, larguras), start=1):
+        c = ws.cell(1, i, h)
+        c.font = Font(name=FONTE, bold=True, size=9, color="FFFFFFFF")
+        c.fill = PatternFill("solid", fgColor=AZUL)
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[1].height = 28
+
+    def _linha(r, valores, cor=None):
+        for col, valor in enumerate(valores, start=1):
+            c = ws.cell(r, col, valor)
+            c.border = BORDA
+            if col == 10:
+                c.number_format = PESO
+            elif col == 11:
+                c.number_format = DINHEIRO
+            elif col in (12, 14):
+                c.number_format = PCT
+            if cor:
+                c.fill = PatternFill("solid", fgColor=cor)
+
+    linha = 2
+    for a in sorted(lote.arquivos, key=lambda x: (x.situacao, x.arquivo)):
+        base = [a.situacao.upper(), a.arquivo, a.numero,
+                "ENTRADA" if a.tipo == "E" else "SAÍDA" if a.tipo == "S" else None]
+        nota = db.get(Nota, a.nota_id) if a.nota_id else None
+        itens = nota.itens if nota else []
+
+        if not itens:
+            # arquivo que nao virou nota (erro de leitura, duplicada, evento ignorado) ou nota
+            # sem item nenhum - o auditor precisa ver mesmo sem ter uma linha de item pra mostrar.
+            cor = COR_NAO_IMPORTADO if a.situacao in ("erro", "duplicada", "ignorada") else None
+            _linha(linha, base + [None] * 9 + [None, a.motivo, a.nota_id], cor)
+            linha += 1
+            continue
+
+        for item in itens:
+            entrou = item.bloco_ttd is not None
+            regra_oficial = ap.regra(db, item.bloco_ttd, nota.data_mov) if entrou else None
+            _linha(linha, base + [
+                nota.natureza, nota.cfop, nota.parceiro.nome if nota.parceiro else None,
+                item.produto.descricao if item.produto else None, item.ncm,
+                float(item.quantidade), float(item.valor) if item.valor is not None else None,
+                float(item.aliquota) if item.aliquota is not None else None, item.bloco_ttd,
+                float(regra_oficial.aliquota) if regra_oficial else None,
+                "SIM" if entrou else "NÃO", a.motivo, a.nota_id,
+            ], COR_ENTROU_APURACAO if entrou else (COR_A_CONFERIR if a.tipo == "S" else None))
+            linha += 1
+
+    ws.freeze_panes = "A2"
+    if linha > 2:
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(cabecalhos))}{linha - 1}"
+
+    ws2 = wb.create_sheet("LEGENDA")
+    ws2.column_dimensions["A"].width = 3
+    ws2.column_dimensions["B"].width = 78
+    linha2 = _titulo(ws2, 1, f"AUDITORIA DO LOTE #{lote.id} — {lote.nome or ''}", largura=2)
+    ws2.cell(linha2, 1, "Gerado em").font = Font(name=FONTE, bold=True, size=9)
+    ws2.cell(linha2, 2, dt.datetime.now().strftime("%d/%m/%Y %H:%M"))
+    linha2 += 2
+    for cor, texto in [
+        (COR_ENTROU_APURACAO, "O item entrou na apuração do TTD (tem bloco atribuído). Confira "
+                              "se a alíquota do bloco bate com a alíquota do XML."),
+        (COR_A_CONFERIR, "Saída sem bloco TTD atribuído — confira se deveria ter entrado na "
+                         "apuração e não entrou."),
+        (COR_NAO_IMPORTADO, "O arquivo do pacote não virou nota (erro de leitura, duplicada de "
+                            "outra já lançada, ou evento que não é NF-e) — confira se deveria "
+                            "ter sido importado."),
+        (None, "Entrada sem bloco TTD, sem cor: é o esperado — só saída usa o benefício do TTD."),
+    ]:
+        c = ws2.cell(linha2, 1, "")
+        if cor:
+            c.fill = PatternFill("solid", fgColor=cor)
+        ws2.cell(linha2, 2, texto).alignment = Alignment(wrap_text=True, vertical="top")
+        ws2.row_dimensions[linha2].height = 30
+        linha2 += 1
 
     saida = BytesIO()
     wb.save(saida)

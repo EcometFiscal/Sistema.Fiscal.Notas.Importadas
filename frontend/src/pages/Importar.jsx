@@ -1,24 +1,65 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { api, data as fdata } from '../api'
+import { api, baixar, data as fdata } from '../api'
 
 const CORES = { importada: 'e', complementada: 's', duplicada: '', pendente: 'acerto',
                 erro: 'cancelada', ignorada: '' }
 const dataHora = (v) => (v ? new Date(v).toLocaleString('pt-BR') : '—')
 
-export default function Importar({ aoImportar }) {
+function TabelaArquivos({ arquivos }) {
+  return (
+    <div className="rolagem">
+      <table>
+        <thead><tr>
+          <th>Situação</th><th>Arquivo</th><th>NF</th><th>Op.</th><th>Chave</th><th>Motivo</th>
+        </tr></thead>
+        <tbody>
+          {arquivos.map((a, i) => (
+            <tr key={i}>
+              <td><span className={`etiq ${CORES[a.situacao] || ''}`}>{a.situacao}</span></td>
+              <td style={{ maxWidth: 220, wordBreak: 'break-all' }}>{a.arquivo}</td>
+              <td className="num">{a.numero || '—'}</td>
+              <td>{a.tipo === 'E' ? 'entrada' : a.tipo === 'S' ? 'saída' : '—'}</td>
+              <td className="num" style={{ fontSize: 11, wordBreak: 'break-all', maxWidth: 200 }}>
+                {a.chave_acesso || '—'}</td>
+              <td style={{ maxWidth: 420 }}>{a.motivo || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function KpisLote({ lote }) {
+  return (
+    <div className="kpis" style={{ marginBottom: 18 }}>
+      <div className="kpi"><div className="rot">Arquivos</div>
+        <div className="val num">{lote.total}</div></div>
+      <div className="kpi"><div className="rot">Importadas</div>
+        <div className="val num">{lote.importadas}</div>
+        <div className="obs">notas novas</div></div>
+      <div className="kpi"><div className="rot">Complementadas</div>
+        <div className="val num">{lote.complementadas}</div>
+        <div className="obs">notas migradas que ganharam os dados do XML</div></div>
+      <div className="kpi"><div className="rot">Já existiam</div>
+        <div className="val num">{lote.duplicadas}</div>
+        <div className="obs">mesma chave de acesso</div></div>
+      <div className="kpi"><div className="rot">Pendentes</div>
+        <div className="val num">{lote.pendentes}</div>
+        <div className="obs">entraram, mas alguém precisa olhar</div></div>
+      <div className="kpi"><div className="rot">Fora</div>
+        <div className="val num">{lote.erros}</div>
+        <div className="obs">erro de leitura ou nota de terceiros</div></div>
+    </div>
+  )
+}
+
+function AbaImportar({ salvoCnpj, carregar, aoImportar }) {
   const [cnpj, setCnpj] = useState('')
-  const [salvoCnpj, setSalvoCnpj] = useState(null)
-  const [lotes, setLotes] = useState([])
-  const [lote, setLote] = useState(null)
   const [enviando, setEnviando] = useState(false)
   const [erro, setErro] = useState(null)
+  const [lote, setLote] = useState(null)
   const arquivo = useRef(null)
-
-  const carregar = () => {
-    api.configuracao().then((c) => setSalvoCnpj(c.cnpj_empresa?.valor || null))
-    api.lotes().then(setLotes)
-  }
-  useEffect(carregar, [])
 
   async function gravarCnpj(e) {
     e.preventDefault(); setErro(null)
@@ -82,50 +123,40 @@ export default function Importar({ aoImportar }) {
       {lote && (
         <div className="cartao">
           <h2>Resultado do lote #{lote.id}</h2>
-          <div className="kpis" style={{ marginBottom: 18 }}>
-            <div className="kpi"><div className="rot">Arquivos</div>
-              <div className="val num">{lote.total}</div></div>
-            <div className="kpi"><div className="rot">Importadas</div>
-              <div className="val num">{lote.importadas}</div>
-              <div className="obs">notas novas</div></div>
-            <div className="kpi"><div className="rot">Complementadas</div>
-              <div className="val num">{lote.complementadas}</div>
-              <div className="obs">notas migradas que ganharam os dados do XML</div></div>
-            <div className="kpi"><div className="rot">Já existiam</div>
-              <div className="val num">{lote.duplicadas}</div>
-              <div className="obs">mesma chave de acesso</div></div>
-            <div className="kpi"><div className="rot">Pendentes</div>
-              <div className="val num">{lote.pendentes}</div>
-              <div className="obs">entraram, mas alguém precisa olhar</div></div>
-            <div className="kpi"><div className="rot">Fora</div>
-              <div className="val num">{lote.erros}</div>
-              <div className="obs">erro de leitura ou nota de terceiros</div></div>
-          </div>
-          <div className="rolagem">
-            <table>
-              <thead><tr>
-                <th>Situação</th><th>Arquivo</th><th>NF</th><th>Op.</th><th>Chave</th><th>Motivo</th>
-              </tr></thead>
-              <tbody>
-                {lote.arquivos.map((a, i) => (
-                  <tr key={i}>
-                    <td><span className={`etiq ${CORES[a.situacao] || ''}`}>{a.situacao}</span></td>
-                    <td style={{ maxWidth: 220, wordBreak: 'break-all' }}>{a.arquivo}</td>
-                    <td className="num">{a.numero || '—'}</td>
-                    <td>{a.tipo === 'E' ? 'entrada' : a.tipo === 'S' ? 'saída' : '—'}</td>
-                    <td className="num" style={{ fontSize: 11, wordBreak: 'break-all', maxWidth: 200 }}>
-                      {a.chave_acesso || '—'}</td>
-                    <td style={{ maxWidth: 420 }}>{a.motivo || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <p className="ajuda">
+            Confira o pacote nota a nota na aba Auditoria — o relatório em Excel de lá mostra a
+            alíquota de cada item e destaca com cor o que entrou na apuração.
+          </p>
+          <KpisLote lote={lote} />
+          <TabelaArquivos arquivos={lote.arquivos} />
         </div>
       )}
+    </>
+  )
+}
 
+function AbaAuditoria({ lotes }) {
+  const [selecionado, setSelecionado] = useState(null)
+  const [carregando, setCarregando] = useState(false)
+
+  async function selecionar(id) {
+    setCarregando(true)
+    try { setSelecionado(await api.lote(id)) }
+    finally { setCarregando(false) }
+  }
+
+  return (
+    <>
       <div className="cartao">
-        <h2>Pacotes importados</h2>
+        <h2>Auditoria de importação</h2>
+        <p className="ajuda">
+          Clique num pacote abaixo pra conferir nota a nota. O relatório em Excel lista todos os
+          arquivos do pacote — inclusive os que não viraram nota — com a alíquota de ICMS de cada
+          item (já com filtro pra agrupar por alíquota) e destaque de cor: verde para o que entrou
+          na apuração do TTD, laranja para saída sem bloco atribuído (a conferir), vermelho para o
+          que não virou nota (erro, duplicada ou evento ignorado). A aba LEGENDA do arquivo explica
+          cada cor.
+        </p>
         <div className="rolagem">
           <table>
             <thead><tr>
@@ -138,7 +169,8 @@ export default function Importar({ aoImportar }) {
             <tbody>
               {lotes.map((l) => (
                 <tr key={l.id} style={{ cursor: 'pointer' }}
-                    onClick={() => api.lote(l.id).then(setLote)}>
+                    className={selecionado?.id === l.id ? 'ativo' : ''}
+                    onClick={() => selecionar(l.id)}>
                   <td className="num">{l.id}</td>
                   <td className="num">{dataHora(l.criado_em)}</td>
                   <td><span className="etiq">{l.origem}</span></td>
@@ -157,6 +189,50 @@ export default function Importar({ aoImportar }) {
           </table>
         </div>
       </div>
+
+      {carregando && <div className="vazio">carregando…</div>}
+
+      {selecionado && !carregando && (
+        <div className="cartao">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <h2>Pacote #{selecionado.id} — {selecionado.nome}</h2>
+            <button type="button" className="acao"
+                    onClick={() => baixar(`/exportar/auditoria/${selecionado.id}`)}>
+              Baixar relatório de auditoria em Excel
+            </button>
+          </div>
+          <KpisLote lote={selecionado} />
+          <TabelaArquivos arquivos={selecionado.arquivos} />
+        </div>
+      )}
+    </>
+  )
+}
+
+export default function Importar({ aoImportar }) {
+  const [aba, setAba] = useState('importar')
+  const [salvoCnpj, setSalvoCnpj] = useState(null)
+  const [lotes, setLotes] = useState([])
+
+  const carregar = () => {
+    api.configuracao().then((c) => setSalvoCnpj(c.cnpj_empresa?.valor || null))
+    api.lotes().then(setLotes)
+  }
+  useEffect(carregar, [])
+
+  return (
+    <>
+      <nav className="subnav">
+        <button className={aba === 'importar' ? 'ativo' : ''} onClick={() => setAba('importar')}>
+          Importar
+        </button>
+        <button className={aba === 'auditoria' ? 'ativo' : ''} onClick={() => setAba('auditoria')}>
+          Auditoria
+        </button>
+      </nav>
+      {aba === 'importar' &&
+        <AbaImportar salvoCnpj={salvoCnpj} carregar={carregar} aoImportar={aoImportar} />}
+      {aba === 'auditoria' && <AbaAuditoria lotes={lotes} />}
     </>
   )
 }
