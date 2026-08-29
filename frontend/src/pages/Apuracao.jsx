@@ -4,6 +4,15 @@ import { api, baixar, rs, pct, data as fdata } from '../api'
 const compHoje = () => new Date().toISOString().slice(0, 7)
 const dataHora = (v) => (v ? new Date(v).toLocaleString('pt-BR') : '—')
 
+// A regra do TTD e' por NCM, entao um bloco pode juntar produtos diferentes na mesma aliquota
+// (ex.: sucata e lingote de aluminio e magnesio caem todos no bloco 2). O nome do produto diz
+// mais pra quem esta' olhando do que a descricao generica da aliquota.
+function produtosDoBloco(ap, b) {
+  const chave = `${b.bloco}${b.devolucao ? 'D' : ''}`
+  const nomes = [...new Set(ap.lancamentos.filter((l) => l.bloco === chave).map((l) => l.produto))]
+  return nomes.length ? nomes.join(', ') : b.descricao
+}
+
 export default function Apuracao({ recarga, aoMudar }) {
   const [comp, setComp] = useState('2026-07')
   const [ap, setAp] = useState(null)
@@ -104,7 +113,7 @@ export default function Apuracao({ recarga, aoMudar }) {
             <div className="rolagem">
               <table>
                 <thead><tr>
-                  <th>Bloco</th><th>Operação</th><th className="dir">Notas</th>
+                  <th>Bloco</th><th>Produtos</th><th className="dir">Notas</th>
                   <th className="dir">Base</th><th className="dir">ICMS</th>
                   <th className="dir">Crédito presumido</th>
                 </tr></thead>
@@ -112,7 +121,7 @@ export default function Apuracao({ recarga, aoMudar }) {
                   {ap.blocos.map((b, i) => (
                     <tr key={i}>
                       <td>{b.bloco}{b.devolucao ? 'D' : ''}</td>
-                      <td>{b.descricao}{b.devolucao ? ' — devolução' : ''}</td>
+                      <td>{produtosDoBloco(ap, b)}{b.devolucao ? ' — devolução' : ''}</td>
                       <td className="dir num">{b.notas}</td>
                       <td className="dir num">{rs(b.base)}</td>
                       <td className="dir num">{rs(b.icms)}</td>

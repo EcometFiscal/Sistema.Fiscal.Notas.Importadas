@@ -31,7 +31,7 @@ export const api = {
   parceiros: (q = '') => req(`/parceiros?limite=30${q ? `&q=${encodeURIComponent(q)}` : ''}`),
   blocos: (uf) => req(`/blocos${uf ? `?uf=${uf}` : ''}`),
   saldo: (id, data) => req(`/estoque/saldo/${id}${data ? `?data=${data}` : ''}`),
-  posicao: (ate) => req(`/estoque/posicao${ate ? `?ate=${ate}` : ''}`),
+  posicao: (ate) => req(`/estoque/posicao?cobertura=false${ate ? `&ate=${ate}` : ''}`),
   razao: (id) => req(`/estoque/razao/${id}`),
   notas: (p = {}) => req('/notas?' + new URLSearchParams(p)),
   lancar: (nota) => req('/notas', { method: 'POST', body: JSON.stringify(nota) }),

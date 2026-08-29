@@ -46,7 +46,7 @@ export default function Estoque({ recarga }) {
             <thead>
               <tr>
                 <th>Produto</th><th className="dir">Saldo (kg)</th><th className="dir">Saldo (R$)</th>
-                <th className="dir">Custo médio</th><th className="dir">Cobertura</th>
+                <th className="dir">Custo médio</th>
               </tr>
             </thead>
             <tbody>
@@ -57,12 +57,9 @@ export default function Estoque({ recarga }) {
                     <td className="dir num">{kg(p.saldo_kg)}</td>
                     <td className="dir num">{rs(p.saldo_rs)}</td>
                     <td className="dir num">{p.custo_medio ? rs(p.custo_medio) + '/kg' : '—'}</td>
-                    <td className="dir num">
-                      {p.cobertura_dias ? `${Math.round(p.cobertura_dias)} dias` : '—'}
-                    </td>
                   </tr>
                   {aberto === p.produto_id && (
-                    <tr><td colSpan={5} style={{ background: '#fafbfc' }}>
+                    <tr><td colSpan={4} style={{ background: '#fafbfc' }}>
                       <table>
                         <thead><tr>
                           <th>Data</th><th>Movimento</th><th>NF</th><th>Parceiro</th>
