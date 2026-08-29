@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import logoEcomet from './assets/ecomet-logo.png'
 import Lancamento from './pages/Lancamento'
 import Estoque from './pages/Estoque'
 import Notas from './pages/Notas'
@@ -48,7 +49,10 @@ export default function App() {
     <>
       <header className="topo">
         <div className="topo-linha">
-          <div className="marca">LASTRO<span>estoque e apuração de importados · TTD 409</span></div>
+          <div className="marca">
+            <img src={logoEcomet} alt="Ecomet" className="marca-logo" />
+            <span>estoque e apuração de importados · TTD 409</span>
+          </div>
           <button type="button" className="tema-botao"
                   title={tema === 'dark' ? 'Modo claro' : 'Modo escuro'}
                   onClick={() => setTema((t) => (t === 'dark' ? 'light' : 'dark'))}>

@@ -43,8 +43,10 @@ a { color: inherit; }
 header.topo { background: var(--preto); color: #fff; padding: 0 24px; }
 .topo-linha { display: flex; align-items: center; gap: 24px; max-width: 1280px; margin: 0 auto;
   height: 56px; }
-.marca { font-weight: 700; letter-spacing: .02em; }
-.marca span { font-weight: 400; opacity: .7; margin-left: 8px; font-size: 13px; }
+.marca { display: flex; align-items: center; gap: 12px; font-weight: 700; letter-spacing: .02em; }
+.marca-logo { display: block; height: 34px; width: auto; background: #fff; border-radius: 6px;
+  padding: 4px 10px; }
+.marca span { font-weight: 400; opacity: .7; font-size: 13px; }
 .tema-botao { background: transparent; border: 1px solid #3a3c42; color: #e7e9ec;
   border-radius: 7px; width: 34px; height: 34px; font-size: 16px; cursor: pointer;
   display: flex; align-items: center; justify-content: center; margin-left: auto; flex: none; }
