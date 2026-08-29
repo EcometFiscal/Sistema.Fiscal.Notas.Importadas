@@ -7,14 +7,21 @@ import Excecoes from './pages/Excecoes'
 import Regras from './pages/Regras'
 import Importar from './pages/Importar'
 
-const ABAS = [
-  ['lancamento', 'Lançar nota'],
-  ['importar', 'Importar XML'],
-  ['estoque', 'Estoque'],
-  ['notas', 'Notas'],
-  ['apuracao', 'Apuração'],
-  ['excecoes', 'Pendências'],
-  ['regras', 'Alíquotas'],
+// Cada secao do menu lateral pode ter sub-abas (o segundo elemento). "Importação XML" fica sem
+// sub-aba de proposito: e' so' entrada de dados, nada mais mora la'.
+const SECOES = [
+  ['inicio', 'Início', null],
+  ['apuracao_importado', 'Apuração Importado', [
+    ['apuracao', 'Apuração'],
+    ['regras', 'Alíquotas'],
+  ]],
+  ['estoque_importado', 'Estoque Importado', [
+    ['estoque', 'Saldo por produto'],
+    ['lancamento', 'Lançar nota'],
+    ['notas', 'Notas lançadas'],
+    ['excecoes', 'Pendências'],
+  ]],
+  ['importacao_xml', 'Importação XML', null],
 ]
 
 function temaAtual() {
@@ -23,7 +30,8 @@ function temaAtual() {
 }
 
 export default function App() {
-  const [aba, setAba] = useState('lancamento')
+  const [secao, setSecao] = useState('inicio')
+  const [sub, setSub] = useState({})
   const [recarga, setRecarga] = useState(0)
   const [tema, setTema] = useState(temaAtual)
   const atualizar = () => setRecarga((n) => n + 1)
@@ -33,18 +41,14 @@ export default function App() {
     try { localStorage.setItem('lastro_tema', tema) } catch { /* ignora */ }
   }, [tema])
 
+  const subsDaSecao = SECOES.find(([id]) => id === secao)?.[2]
+  const abaAtiva = subsDaSecao ? (sub[secao] || subsDaSecao[0][0]) : null
+
   return (
     <>
       <header className="topo">
         <div className="topo-linha">
           <div className="marca">LASTRO<span>estoque e apuração de importados · TTD 409</span></div>
-          <nav>
-            {ABAS.map(([id, rotulo]) => (
-              <button key={id} className={aba === id ? 'ativo' : ''} onClick={() => setAba(id)}>
-                {rotulo}
-              </button>
-            ))}
-          </nav>
           <button type="button" className="tema-botao"
                   title={tema === 'dark' ? 'Modo claro' : 'Modo escuro'}
                   onClick={() => setTema((t) => (t === 'dark' ? 'light' : 'dark'))}>
@@ -52,19 +56,53 @@ export default function App() {
           </button>
         </div>
       </header>
-      <main>
-        {aba === 'lancamento' && <Lancamento aoLancar={atualizar} />}
-        {aba === 'importar' && <Importar aoImportar={atualizar} />}
-        {aba === 'estoque' && <Estoque recarga={recarga} />}
-        {aba === 'notas' && <Notas recarga={recarga} aoMudar={atualizar} />}
-        {aba === 'apuracao' && <Apuracao recarga={recarga} aoMudar={atualizar} />}
-        {aba === 'excecoes' && <Excecoes recarga={recarga} />}
-        {aba === 'regras' && <Regras />}
-        <p className="rodape">
-          Fases 1 a 5 — a nota entra por XML ou pela tela, uma vez só, e alimenta estoque e
-          apuração ao mesmo tempo.
-        </p>
-      </main>
+      <div className="corpo">
+        <aside className="lateral">
+          {SECOES.map(([id, rotulo]) => (
+            <button key={id} className={secao === id ? 'ativo' : ''} onClick={() => setSecao(id)}>
+              {rotulo}
+            </button>
+          ))}
+        </aside>
+
+        <main>
+          {subsDaSecao && (
+            <nav className="subnav">
+              {subsDaSecao.map(([id, rotulo]) => (
+                <button key={id} className={abaAtiva === id ? 'ativo' : ''}
+                        onClick={() => setSub((s) => ({ ...s, [secao]: id }))}>
+                  {rotulo}
+                </button>
+              ))}
+            </nav>
+          )}
+
+          {secao === 'inicio' && (
+            <div className="cartao">
+              <h2>Bem-vindo</h2>
+              <p className="ajuda" style={{ marginBottom: 0 }}>
+                Fases 1 a 5 concluídas — a nota entra por XML ou pela tela, uma vez só, e alimenta
+                estoque e apuração ao mesmo tempo. Esta tela vai virar o painel do sistema; por
+                enquanto, use o menu ao lado para Apuração Importado, Estoque Importado ou
+                Importação XML.
+              </p>
+            </div>
+          )}
+
+          {secao === 'apuracao_importado' && abaAtiva === 'apuracao' &&
+            <Apuracao recarga={recarga} aoMudar={atualizar} />}
+          {secao === 'apuracao_importado' && abaAtiva === 'regras' && <Regras />}
+
+          {secao === 'estoque_importado' && abaAtiva === 'estoque' && <Estoque recarga={recarga} />}
+          {secao === 'estoque_importado' && abaAtiva === 'lancamento' &&
+            <Lancamento aoLancar={atualizar} />}
+          {secao === 'estoque_importado' && abaAtiva === 'notas' &&
+            <Notas recarga={recarga} aoMudar={atualizar} />}
+          {secao === 'estoque_importado' && abaAtiva === 'excecoes' && <Excecoes recarga={recarga} />}
+
+          {secao === 'importacao_xml' && <Importar aoImportar={atualizar} />}
+        </main>
+      </div>
     </>
   )
 }

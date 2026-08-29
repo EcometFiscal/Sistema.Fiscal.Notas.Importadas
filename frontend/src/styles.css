@@ -45,17 +45,27 @@ header.topo { background: var(--preto); color: #fff; padding: 0 24px; }
   height: 56px; }
 .marca { font-weight: 700; letter-spacing: .02em; }
 .marca span { font-weight: 400; opacity: .7; margin-left: 8px; font-size: 13px; }
-nav { display: flex; gap: 4px; margin-left: auto; }
-nav button { background: transparent; border: 0; color: #c7c9ce; padding: 8px 14px; height: 56px;
-  cursor: pointer; font: inherit; border-bottom: 3px solid transparent; }
-nav button:hover { color: #fff; }
-nav button.ativo { color: #fff; border-bottom-color: var(--laranja); }
 .tema-botao { background: transparent; border: 1px solid #3a3c42; color: #e7e9ec;
   border-radius: 7px; width: 34px; height: 34px; font-size: 16px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center; margin-left: 8px; flex: none; }
+  display: flex; align-items: center; justify-content: center; margin-left: auto; flex: none; }
 .tema-botao:hover { border-color: var(--laranja); color: var(--laranja); }
 
-main { max-width: 1280px; margin: 24px auto 64px; padding: 0 24px; }
+.corpo { display: flex; align-items: flex-start; max-width: 1280px; margin: 0 auto; }
+
+.lateral { width: 216px; flex: none; display: flex; flex-direction: column; gap: 2px;
+  padding: 24px 12px 24px 24px; position: sticky; top: 0; }
+.lateral button { text-align: left; background: transparent; border: 0; color: var(--tinta);
+  padding: 10px 14px; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 500; }
+.lateral button:hover { background: var(--papel-hover); }
+.lateral button.ativo { background: var(--verde-bg); color: var(--verde-texto); font-weight: 600; }
+
+main { flex: 1; min-width: 0; margin: 24px 24px 64px 0; padding: 0; }
+.subnav { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--linha); }
+.subnav button { background: transparent; border: 0; color: var(--cinza); padding: 10px 14px;
+  cursor: pointer; font: inherit; font-weight: 500; border-bottom: 3px solid transparent;
+  margin-bottom: -1px; }
+.subnav button:hover { color: var(--tinta); }
+.subnav button.ativo { color: var(--tinta); border-bottom-color: var(--laranja); }
 .cartao { background: var(--papel); border: 1px solid var(--linha); border-radius: 10px;
   box-shadow: var(--sombra); padding: 20px; margin-bottom: 20px; }
 .cartao > h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em;
@@ -121,8 +131,11 @@ button.icone { background: transparent; border: 0; color: var(--vermelho); curso
 .saldo-dica { font-size: 12px; margin-top: 6px; color: var(--cinza); }
 .saldo-dica.falta { color: var(--vermelho); font-weight: 600; }
 .vazio { text-align: center; color: var(--cinza); padding: 32px; font-size: 14px; }
-.rodape { color: var(--cinza); font-size: 12px; text-align: center; margin-top: 32px; }
 @media (max-width: 860px) {
   .g2,.g3,.g4 { grid-template-columns: 1fr; }
   .linha-item { grid-template-columns: 1fr 1fr; }
+  .corpo { flex-direction: column; }
+  .lateral { width: 100%; flex-direction: row; overflow-x: auto; position: static;
+    padding: 12px 16px; gap: 6px; }
+  main { margin: 16px; }
 }
