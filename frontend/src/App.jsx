@@ -7,9 +7,12 @@ import Apuracao from './pages/Apuracao'
 import Excecoes from './pages/Excecoes'
 import Regras from './pages/Regras'
 import Importar from './pages/Importar'
+import ConciliacaoIcms from './pages/ConciliacaoIcms'
 
 // Cada secao do menu lateral pode ter sub-abas (o segundo elemento). "Importação XML" fica sem
-// sub-aba de proposito: e' so' entrada de dados, nada mais mora la'.
+// sub-aba de proposito: e' so' entrada de dados, nada mais mora la'. "Conciliação ICMS" e' o
+// ICMS normal da empresa toda (contabilidade x Ecomet/SAGI) - modulo separado do TTD 409 de
+// importados acima, sem nenhum dado em comum entre os dois.
 const SECOES = [
   ['inicio', 'Início', null],
   ['apuracao_importado', 'Apuração Importado', [
@@ -23,6 +26,7 @@ const SECOES = [
     ['excecoes', 'Pendências'],
   ]],
   ['importacao_xml', 'Importação XML', null],
+  ['conciliacao_icms', 'Conciliação ICMS', null],
 ]
 
 function temaAtual() {
@@ -105,6 +109,8 @@ export default function App() {
           {secao === 'estoque_importado' && abaAtiva === 'excecoes' && <Excecoes recarga={recarga} />}
 
           {secao === 'importacao_xml' && <Importar aoImportar={atualizar} />}
+
+          {secao === 'conciliacao_icms' && <ConciliacaoIcms />}
         </main>
       </div>
     </>

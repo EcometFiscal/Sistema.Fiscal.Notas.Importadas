@@ -225,3 +225,205 @@ class ArquivoImportado(Base):
     nota_id: Mapped[int | None] = mapped_column(ForeignKey("nota.id", ondelete="SET NULL"))
 
     lote: Mapped["LoteImportacao"] = relationship(back_populates="arquivos")
+
+
+# ====================================================================================
+# Conciliacao e Fechamento de ICMS (normal, empresa toda) - modulo separado do TTD 409
+# de importados acima. Recebido como pacote pronto em 31/08/2026 (ver
+# claude/estado-atual.md) e integrado ao schema existente em vez de ganhar um banco
+# proprio. Prefixo "Conc"/"conc_" so' para nao colidir por acidente com o dominio de
+# importados; nao ha' nenhuma chave estrangeira entre os dois modulos.
+#
+# O pacote original trazia tipos ENUM nativos do Postgres para os campos de status/
+# origem/etc. Convertidos aqui para String + CheckConstraint, que e' o padrao usado em
+# todo o resto deste arquivo (ex.: Nota.tipo) e que o Base.metadata.create_all() sabe
+# criar sozinho, sem precisar de CREATE TYPE em migracao a parte. Da mesma forma, os
+# ids viraram inteiro autoincremento (nao uuid) e os campos que apontavam para um
+# usuario (fechado_por, responsavel, criada_por) viraram String, ja' que este sistema
+# nao tem tabela de usuarios - segue o mesmo padrao de Nota.criado_por/RegraTTD.
+# alterado_por.
+class ConcPeriodo(Base):
+    __tablename__ = "conc_periodo"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    competencia: Mapped[str] = mapped_column(String(7))            # AAAA-MM, como ApuracaoMes
+    inscricao_estadual: Mapped[str] = mapped_column(String(14), default="260070009")
+    status: Mapped[str] = mapped_column(String(15), default="aberto")   # aberto|em_analise|fechado
+    saldo_credor_anterior: Mapped[float | None] = mapped_column(DIN)
+    criado_em: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+    fechado_em: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    fechado_por: Mapped[str | None] = mapped_column(String(60))
+
+    documentos: Mapped[list["ConcDocumentoFonte"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+    lancamentos: Mapped[list["ConcLancamentoEntrada"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+    saldos: Mapped[list["ConcSaldoCfop"]] = relationship(cascade="all, delete-orphan", lazy="selectin")
+    divergencias: Mapped[list["ConcDivergencia"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+    linhas_apuracao: Mapped[list["ConcApuracaoLinha"]] = relationship(
+        cascade="all, delete-orphan", lazy="selectin")
+    fechamento: Mapped["ConcFechamento | None"] = relationship(
+        cascade="all, delete-orphan", uselist=False)
+
+    __table_args__ = (
+        CheckConstraint("status in ('aberto','em_analise','fechado')", name="ck_concperiodo_status"),
+        Index("ix_concperiodo_comp", "competencia", "inscricao_estadual", unique=True),
+    )
+
+
+class ConcDocumentoFonte(Base):
+    """Um dos 4 documentos-fonte de uma competencia (Previa Dime, Livro de Entradas da
+    contabilidade, Livro de Entradas e RAICMS do Ecomet). total_documento fica nulo ate' a
+    autoconferencia forte (comparar com o total impresso no rodape' do PDF) ser implementada -
+    ver a nota em services/conciliacao/ingestao.py."""
+    __tablename__ = "conc_documento_fonte"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    periodo_id: Mapped[int] = mapped_column(ForeignKey("conc_periodo.id", ondelete="CASCADE"))
+    tipo: Mapped[str] = mapped_column(String(30))          # dime | livro_entradas | raicms
+    origem: Mapped[str] = mapped_column(String(15))        # contabilidade | ecomet
+    nome_original: Mapped[str] = mapped_column(Text)
+    total_documento: Mapped[float | None] = mapped_column(DIN)
+    total_extraido: Mapped[float | None] = mapped_column(DIN)
+    conferido: Mapped[bool] = mapped_column(Boolean, default=False)
+    erro: Mapped[str | None] = mapped_column(Text)
+    lido_em: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        CheckConstraint("origem in ('contabilidade','ecomet')", name="ck_concdoc_origem"),
+        Index("ix_concdoc_periodo_tipo", "periodo_id", "tipo", "origem", unique=True),
+    )
+
+
+class ConcLancamentoEntrada(Base):
+    """Nota a nota do Livro de Entradas - de um lado (contabilidade) ou do outro (Ecomet).
+    O pareamento entre os dois lados e' feito em memoria por numero+valor (services/
+    conciliacao/reconcile.py), nunca por emitente: um lado usa codigo interno, o outro CNPJ."""
+    __tablename__ = "conc_lancamento_entrada"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    periodo_id: Mapped[int] = mapped_column(ForeignKey("conc_periodo.id", ondelete="CASCADE"))
+    documento_id: Mapped[int] = mapped_column(ForeignKey("conc_documento_fonte.id", ondelete="CASCADE"))
+    origem: Mapped[str] = mapped_column(String(15))
+    data_entrada: Mapped[dt.date | None] = mapped_column(Date)
+    data_documento: Mapped[dt.date | None] = mapped_column(Date)
+    especie: Mapped[str | None] = mapped_column(String(10))
+    serie: Mapped[str | None] = mapped_column(String(6))
+    numero: Mapped[str] = mapped_column(String(20))
+    emitente_codigo: Mapped[str | None] = mapped_column(String(30))   # codigo interno (contabilidade)
+    emitente_cnpj: Mapped[str | None] = mapped_column(String(14))     # CNPJ (ecomet)
+    uf: Mapped[str | None] = mapped_column(String(2))
+    valor_contabil: Mapped[float] = mapped_column(DIN, default=0)
+    cfop: Mapped[str | None] = mapped_column(String(4))
+    cod_fiscal: Mapped[str | None] = mapped_column(String(1))    # 1 c/credito|2 isenta|3 outras|4 difal
+    base_calculo: Mapped[float] = mapped_column(DIN, default=0)
+    aliquota: Mapped[float] = mapped_column(Numeric(6, 2), default=0)
+    imposto: Mapped[float] = mapped_column(DIN, default=0)
+    difal: Mapped[float] = mapped_column(DIN, default=0)
+
+    __table_args__ = (
+        CheckConstraint("origem in ('contabilidade','ecomet')", name="ck_conclanc_origem"),
+        Index("ix_conclanc_periodo_num", "periodo_id", "origem", "numero"),
+        Index("ix_conclanc_periodo_cfop", "periodo_id", "cfop"),
+    )
+
+
+class ConcSaldoCfop(Base):
+    """Saldo por CFOP de uma das quatro fontes (Dime, RAICMS, Livro de Entradas do Ecomet
+    somado por CFOP, ou - se um dia precisar - o CFOP somado do lado contabil)."""
+    __tablename__ = "conc_saldo_cfop"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    periodo_id: Mapped[int] = mapped_column(ForeignKey("conc_periodo.id", ondelete="CASCADE"))
+    fonte: Mapped[str] = mapped_column(String(15))     # dime|raicms|livro_ecomet|cfop_contabil
+    tipo: Mapped[str] = mapped_column(String(8))       # entrada|saida
+    cfop: Mapped[str] = mapped_column(String(4))
+    valor_contabil: Mapped[float] = mapped_column(DIN, default=0)
+    base_calculo: Mapped[float] = mapped_column(DIN, default=0)
+    imposto: Mapped[float] = mapped_column(DIN, default=0)
+    isentas: Mapped[float] = mapped_column(DIN, default=0)
+    outras: Mapped[float] = mapped_column(DIN, default=0)
+    difal: Mapped[float] = mapped_column(DIN, default=0)
+
+    __table_args__ = (
+        CheckConstraint("tipo in ('entrada','saida')", name="ck_concsaldo_tipo"),
+        Index("ix_concsaldo_unico", "periodo_id", "fonte", "tipo", "cfop", unique=True),
+    )
+
+
+class ConcDivergencia(Base):
+    """Uma linha do painel de divergencias. tipo segue o vocabulario do pacote original:
+    cfop_saldo | cfop_nota | coerencia_interna_ecomet | saldo_credor_anterior |
+    nota_ausente_ecomet | pareamento_manual."""
+    __tablename__ = "conc_divergencia"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    periodo_id: Mapped[int] = mapped_column(ForeignKey("conc_periodo.id", ondelete="CASCADE"))
+    tipo: Mapped[str] = mapped_column(String(40))
+    severidade: Mapped[str] = mapped_column(String(10))     # alto | revisar
+    status: Mapped[str] = mapped_column(String(25), default="aberta")
+    cfop: Mapped[str | None] = mapped_column(String(4))
+    numero_nota: Mapped[str | None] = mapped_column(String(20))
+    descricao: Mapped[str] = mapped_column(Text)
+    valor_contabilidade: Mapped[float | None] = mapped_column(DIN)
+    valor_ecomet: Mapped[float | None] = mapped_column(DIN)
+    diferenca: Mapped[float | None] = mapped_column(DIN)
+    justificativa: Mapped[str | None] = mapped_column(Text)
+    regra_id: Mapped[int | None] = mapped_column(ForeignKey("conc_regra_justificativa.id"))
+    responsavel: Mapped[str | None] = mapped_column(String(60))
+    resolvido_em: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        CheckConstraint("severidade in ('alto','revisar')", name="ck_concdiv_severidade"),
+        CheckConstraint(
+            "status in ('aberta','corrigida_ecomet','devolvida_contabilidade','justificada')",
+            name="ck_concdiv_status"),
+        Index("ix_concdiv_periodo", "periodo_id", "status", "severidade"),
+    )
+
+
+class ConcRegraJustificativa(Base):
+    """Justificativa recorrente (fase 5 do pacote original): 'CFOP 1556 e' sempre uso e
+    consumo, nao precisa perguntar de novo todo mes'."""
+    __tablename__ = "conc_regra_justificativa"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inscricao_estadual: Mapped[str] = mapped_column(String(14), default="260070009")
+    escopo: Mapped[str] = mapped_column(String(20))     # cfop | emitente | tipo_divergencia
+    chave: Mapped[str] = mapped_column(String(40))
+    motivo: Mapped[str] = mapped_column(Text)
+    ativa: Mapped[bool] = mapped_column(Boolean, default=True)
+    criada_em: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+    criada_por: Mapped[str | None] = mapped_column(String(60))
+
+    __table_args__ = (
+        Index("ix_concregra_unico", "inscricao_estadual", "escopo", "chave", unique=True),
+    )
+
+
+class ConcApuracaoLinha(Base):
+    """Uma linha da apuracao normal de ICMS (grupo debito|outros_debitos|credito|
+    outros_creditos|saldo), no mesmo espirito de ApuracaoMes mas para o ICMS da empresa
+    toda, nao so' o TTD 409 de importados."""
+    __tablename__ = "conc_apuracao_linha"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    periodo_id: Mapped[int] = mapped_column(ForeignKey("conc_periodo.id", ondelete="CASCADE"))
+    grupo: Mapped[str] = mapped_column(String(20))    # debito|outros_debitos|credito|outros_creditos|saldo
+    ordem: Mapped[int] = mapped_column(Integer)
+    rotulo: Mapped[str] = mapped_column(Text)
+    valor: Mapped[float] = mapped_column(DIN, default=0)
+    origem_texto: Mapped[str | None] = mapped_column(Text)
+    editavel: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        Index("ix_concapur_unico", "periodo_id", "grupo", "ordem", unique=True),
+    )
+
+
+class ConcFechamento(Base):
+    __tablename__ = "conc_fechamento"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    periodo_id: Mapped[int] = mapped_column(
+        ForeignKey("conc_periodo.id", ondelete="RESTRICT"), unique=True)
+    total_debitos: Mapped[float] = mapped_column(DIN)
+    total_creditos: Mapped[float] = mapped_column(DIN)
+    imposto_a_recolher: Mapped[float] = mapped_column(DIN, default=0)
+    saldo_credor_transportado: Mapped[float] = mapped_column(DIN, default=0)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    fechado_em: Mapped[dt.datetime] = mapped_column(DateTime, server_default=func.now())
+    fechado_por: Mapped[str | None] = mapped_column(String(60))

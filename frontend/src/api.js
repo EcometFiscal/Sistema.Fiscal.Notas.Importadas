@@ -50,6 +50,10 @@ export const api = {
     req('/configuracao', { method: 'POST', body: JSON.stringify({ cnpj_empresa }) }),
   lotes: () => req('/importar/lotes'),
   lote: (id) => req(`/importar/lotes/${id}`),
+  conciliacaoPeriodos: () => req('/conciliacao/periodos'),
+  conciliacaoPeriodo: (comp) => req(`/conciliacao/periodos/${comp}`),
+  justificarDivergencia: (id, dados) =>
+    req(`/conciliacao/divergencias/${id}/justificar`, { method: 'POST', body: JSON.stringify(dados) }),
   importarZip: async (arquivo) => {
     const fd = new FormData()
     fd.append('arquivo', arquivo)

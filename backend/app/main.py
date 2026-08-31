@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from .config import APP_NAME, CORS_ORIGINS, CRIAR_TABELAS, SENHA_ACESSO, VERSION
 from .db import Base, SessionLocal, engine
-from .routers import apuracao, cadastros, estoque, exportacao, importacao, notas
+from .routers import apuracao, cadastros, conciliacao, estoque, exportacao, importacao, notas
 from .services.apuracao import backfill_ncm_produtos, semear_regras
 
 
@@ -44,10 +44,12 @@ app.include_router(estoque.router, prefix="/api")
 app.include_router(apuracao.router, prefix="/api")
 app.include_router(exportacao.router, prefix="/api")
 app.include_router(importacao.router, prefix="/api")
+app.include_router(conciliacao.router, prefix="/api")
 
 
 @app.get("/api/saude")
 def saude():
     return dict(app=APP_NAME, versao=VERSION,
-                fase="5 - importacao por XML, estoque por saldo e apuracao TTD",
+                fase="5 - importacao por XML, estoque por saldo e apuracao TTD "
+                     "+ conciliacao de ICMS (fase 1: dados por script local)",
                 protegido_por_senha=bool(SENHA_ACESSO))
