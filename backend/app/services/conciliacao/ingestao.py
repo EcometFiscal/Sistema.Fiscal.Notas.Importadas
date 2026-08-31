@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from ...models import (ConcApuracaoLinha, ConcDivergencia, ConcDocumentoFonte,
                        ConcLancamentoEntrada, ConcPeriodo, ConcSaldoCfop)
 from .parsers import (parse_dime_apuracao, parse_dime_cfop, parse_livro_contab,
-                      parse_livro_ecomet, parse_raicms, pdf_text)
+                      parse_livro_ecomet, parse_raicms, pdf_text, pdf_text_table)
 from .reconcile import agrupa_faltantes_por_cfop, compara_cfop, concilia_notas
 
 ROTULOS_APURACAO = {
@@ -67,8 +67,8 @@ def importar_periodo(db: Session, competencia: str, *, contab_livro: str, contab
     dela (o periodo em si e' preservado, junto com fechamento e justificativas ja' dadas) -
     assim corrigir um PDF errado e' so' rodar de novo.
     """
-    contab = parse_livro_contab(pdf_text(contab_livro))
-    ecomet = parse_livro_ecomet(pdf_text(ecomet_livro))
+    contab = parse_livro_contab(pdf_text_table(contab_livro))
+    ecomet = parse_livro_ecomet(pdf_text_table(ecomet_livro))
     dime_txt = pdf_text(contab_dime)
     dime, apur = parse_dime_cfop(dime_txt), parse_dime_apuracao(dime_txt)
     raicms = parse_raicms(pdf_text(ecomet_raicms))

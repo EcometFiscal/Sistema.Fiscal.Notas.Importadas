@@ -38,6 +38,15 @@ def pdf_text(path):
                           capture_output=True, text=True, check=True).stdout
 
 
+def pdf_text_table(path):
+    """Como pdf_text, mas com '-table' em vez de '-layout': mantem coluna vazia como espaco em
+    branco genuino (nao comprime), essencial para as notas nota-a-nota de parse_livro_contab e
+    parse_livro_ecomet - com '-layout' colunas vizinhas vazias fazem valores de outra coluna
+    (do bloco de IPI, por ex.) vazarem para dentro da posicao de aliquota/imposto do ICMS."""
+    return subprocess.run(['pdftotext', '-table', str(path), '-'],
+                          capture_output=True, text=True, check=True).stdout
+
+
 # ---------------------------------------------------------------- DIME
 def parse_dime_cfop(text):
     """Quadros 01 (entradas) e 02 (saidas) da Previa Dime -> {cfop: {...}}"""
@@ -120,27 +129,37 @@ def parse_raicms(text):
 
 
 # ---------------------------------------------------------------- Livro de Entradas (nota a nota)
+# Le' a saida de pdf_text_table (nao pdf_text/-layout): so' ela preserva coluna vazia como
+# espaco em branco, sem a qual nao da' pra saber se um numero pertence ao bloco ICMS (cod/base/
+# aliq/imposto) ou ao bloco IPI logo depois - ver nota em pdf_text_table.
+#
+# cod/base/aliq/imposto do bloco ICMS: aliq+imposto so' aparecem quando cod_fiscal='1' (operacao
+# com credito - unico caso que apura imposto); cod_fiscal 2/3 (isenta/outras) nunca tem, entao o
+# grupo 13 (aliq+imposto) e' opcional e so' e' interpretado quando cod_fiscal='1'. O que vem depois
+# (bloco IPI - cod/base/imposto de IPI) e' ignorado, nao faz parte do modelo.
 RE_CONTAB = re.compile(
     r'^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(\d{1,4})\s+(\d{1,9})\s+(\d{2}/\d{2}/\d{4})\s+'
-    r'(\S+)\s+([A-Z]{2})\s+(' + NUM + r')\s+(\d)-(\d{3})\s+(\d)\s+(' + NUM + r')(.*)$')
+    r'(\S+)\s+([A-Z]{2})\s+(' + NUM + r')\s+(\d)-(\d{3})'
+    r'(?:\s+(\d)\s+(' + NUM + r')(?:\s+(' + NUM + r')\s+(' + NUM + r'))?.*)?$')
 
 
 def parse_livro_contab(text):
-    """Livro Registro de Entradas da contabilidade -> lista de lancamentos."""
+    """Livro Registro de Entradas da contabilidade -> lista de lancamentos.
+    `text` deve vir de pdf_text_table (nao pdf_text/-layout)."""
     rows, ultimo = [], None
     for line in text.splitlines():
         m = RE_CONTAB.match(line.strip())
         if m:
-            resto = re.findall(NUM, m.group(13))
-            aliq = to_float(resto[0]) if len(resto) >= 2 else 0.0
-            imposto = to_float(resto[1]) if len(resto) >= 2 else 0.0
+            cod_fiscal = m.group(11) or '0'
+            aliq = to_float(m.group(13)) if cod_fiscal == '1' and m.group(13) else 0.0
+            imposto = to_float(m.group(14)) if cod_fiscal == '1' and m.group(14) else 0.0
             ultimo = dict(data_entrada=m.group(1), especie=m.group(2).strip(),
                           serie=m.group(3), numero=m.group(4).lstrip('0') or '0',
                           data_doc=m.group(5), cod_emitente=m.group(6), uf=m.group(7),
                           valor_contabil=to_float(m.group(8)),
-                          cfop=m.group(9) + m.group(10), cod_fiscal=m.group(11),
-                          base_calculo=to_float(m.group(12)), aliquota=aliq,
-                          imposto=imposto, difal_base=0.0, difal=0.0)
+                          cfop=m.group(9) + m.group(10), cod_fiscal=cod_fiscal,
+                          base_calculo=to_float(m.group(12)) if m.group(12) else 0.0,
+                          aliquota=aliq, imposto=imposto, difal_base=0.0, difal=0.0)
             rows.append(ultimo)
             continue
         s = line.strip()
@@ -151,32 +170,27 @@ def parse_livro_contab(text):
     return rows
 
 
+# Le' a saida de pdf_text_table (nao pdf_text/-layout). No layout real cada nota ocupa a linha
+# principal (data...CFOP) seguida de "ICMS" e cod/base/aliq/imposto do proprio bloco ICMS, tudo
+# na MESMA linha - a linha de continuacao logo abaixo e' o bloco IPI (irrelevante aqui, ignorado).
 RE_ECOMET_MAIN = re.compile(
     r'^(\d{2}/\d{2}/\d{4})\s+(\d{2,3})\s+(\d{1,4})\s+(\d{1,9})\s+(\d{2}/\d{2}/\d{4})\s+'
-    r'(\d{11,14})\s+([A-Z]{2})\s+(' + NUM + r')\s+([1-7]\d{3})\s*$')
-RE_ECOMET_ICMS = re.compile(
-    r'^ICMS\s+(\d)\s+(' + NUM + r')\s+(\d+(?:,\d+)?)\s+(' + NUM + r')\s*$')
+    r'(\d{11,14})\s+([A-Z]{2})\s+(' + NUM + r')\s+([1-7]\d{3})\s+ICMS\s+(\d)\s+'
+    r'(' + NUM + r')\s+(\d+(?:,\d+)?)\s+(' + NUM + r')\s*$')
 
 
 def parse_livro_ecomet(text):
-    """Livro Registro de Entradas do SAGI/Ecomet -> lista de lancamentos."""
-    rows, pend = [], None
+    """Livro Registro de Entradas do SAGI/Ecomet -> lista de lancamentos.
+    `text` deve vir de pdf_text_table (nao pdf_text/-layout)."""
+    rows = []
     for line in text.splitlines():
-        s = line.strip()
-        mi = RE_ECOMET_ICMS.match(s)
-        if mi:
-            pend = dict(cod_fiscal=mi.group(1), base_calculo=to_float(mi.group(2)),
-                        aliquota=to_float(mi.group(3).replace(',', ',')),
-                        imposto=to_float(mi.group(4)))
+        m = RE_ECOMET_MAIN.match(line.strip())
+        if not m:
             continue
-        mm = RE_ECOMET_MAIN.match(s)
-        if mm:
-            r = dict(data_entrada=mm.group(1), especie=mm.group(2), serie=mm.group(3),
-                     numero=mm.group(4).lstrip('0') or '0', data_doc=mm.group(5),
-                     cnpj=mm.group(6), uf=mm.group(7),
-                     valor_contabil=to_float(mm.group(8)), cfop=mm.group(9),
-                     cod_fiscal='', base_calculo=0.0, aliquota=0.0, imposto=0.0)
-            if pend:
-                r.update(pend); pend = None
-            rows.append(r)
+        rows.append(dict(
+            data_entrada=m.group(1), especie=m.group(2), serie=m.group(3),
+            numero=m.group(4).lstrip('0') or '0', data_doc=m.group(5),
+            cnpj=m.group(6), uf=m.group(7), valor_contabil=to_float(m.group(8)),
+            cfop=m.group(9), cod_fiscal=m.group(10), base_calculo=to_float(m.group(11)),
+            aliquota=to_float(m.group(12)), imposto=to_float(m.group(13))))
     return rows
