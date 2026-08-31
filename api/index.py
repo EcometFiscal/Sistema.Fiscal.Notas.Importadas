@@ -1,12 +1,11 @@
-"""Ponto de entrada da Vercel.
+"""Ponto de entrada antigo da Vercel - RETIRADO em 01/09/2026.
 
-A Vercel serve tudo o que estiver em /api como funcao serverless. O objeto `app` abaixo e' o
-mesmo FastAPI que roda local - nao existe uma versao "de nuvem" e outra "de casa".
+A API deixou de ser publicada como uma unica funcao serverless Python (o jeito zero-config
+antigo, "api/" na raiz) e passou a rodar como o service "backend" em container Docker
+(ver vercel.json na raiz e backend/Dockerfile.vercel) - so' assim o `pdftotext` (poppler-utils)
+fica disponivel em producao para o modulo de Conciliacao de ICMS.
+
+Este arquivo nao roda mais nada: fica so' como marcador, para nao reintroduzir sem querer a
+funcao serverless antiga (que colidiria com o rewrite de /api/* pro service "backend"). Se algum
+dia isso for revertido, o codigo antigo era so' importar `app.main.app` - ver o historico do git.
 """
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "backend"))
-
-from app.main import app  # noqa: E402,F401

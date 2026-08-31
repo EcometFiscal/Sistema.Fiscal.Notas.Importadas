@@ -11,6 +11,15 @@ binario NAO esta' disponivel na funcao serverless hoje - a ingestao desta compet
 scripts/importar_conciliacao_icms.py, executado localmente (ou por uma sessao com shell real),
 gravando o resultado ja' processado no Postgres. Ver docs/CONTRATO-DE-DADOS.md do pacote
 original para o racional completo.
+
+Nota sobre `-table`: uma versao anterior deste arquivo passou a ler os Livros de Entradas com
+`pdftotext -table` em vez de `-layout`, para tentar evitar que valores do bloco de IPI vazassem
+para a coluna de aliquota/imposto do ICMS. Essa mudanca foi revertida (01/09/2026): `-table` NAO
+e' uma opcao padrao do poppler (confirmado com `pdftotext -h` na versao 24.02.0 - so' existem
+`-layout`, `-fixed`, `-raw`; `-table` e' um patch de downstream de algumas distros, ausente na
+maioria dos ambientes) e o parser com `-layout` ja' fecha exato com o rodape' oficial nos
+documentos reais de 07/2026 (contabilidade e Ecomet, entradas e saidas) - o vazamento que
+motivou a mudanca nao foi reproduzido. Manter `-layout` em todo o modulo por portabilidade.
 """
 import re
 import subprocess
@@ -35,15 +44,6 @@ def to_float(s):
 
 def pdf_text(path):
     return subprocess.run(['pdftotext', '-layout', str(path), '-'],
-                          capture_output=True, text=True, check=True).stdout
-
-
-def pdf_text_table(path):
-    """Como pdf_text, mas com '-table' em vez de '-layout': mantem coluna vazia como espaco em
-    branco genuino (nao comprime), essencial para as notas nota-a-nota de parse_livro_contab e
-    parse_livro_ecomet - com '-layout' colunas vizinhas vazias fazem valores de outra coluna
-    (do bloco de IPI, por ex.) vazarem para dentro da posicao de aliquota/imposto do ICMS."""
-    return subprocess.run(['pdftotext', '-table', str(path), '-'],
                           capture_output=True, text=True, check=True).stdout
 
 
@@ -96,9 +96,9 @@ def parse_dime_apuracao(text):
     return out
 
 
-# ---------------------------------------------------------------- RAICMS (Ecomet)
+# ---------------------------------------------------------------- RAICMS (Ecomet) / "Livro Fiscal"
 def parse_raicms(text):
-    """Livro Fiscal SAGI (RAICMS P9) -> cfops + resumo da apuracao."""
+    """Livro Fiscal SAGI (RAICMS P9) -> cfops (entradas+saidas) + resumo da apuracao."""
     out = {'entradas': {}, 'saidas': {}, 'resumo': {}}
     bloco = None
     for line in text.splitlines():
@@ -129,37 +129,27 @@ def parse_raicms(text):
 
 
 # ---------------------------------------------------------------- Livro de Entradas (nota a nota)
-# Le' a saida de pdf_text_table (nao pdf_text/-layout): so' ela preserva coluna vazia como
-# espaco em branco, sem a qual nao da' pra saber se um numero pertence ao bloco ICMS (cod/base/
-# aliq/imposto) ou ao bloco IPI logo depois - ver nota em pdf_text_table.
-#
-# cod/base/aliq/imposto do bloco ICMS: aliq+imposto so' aparecem quando cod_fiscal='1' (operacao
-# com credito - unico caso que apura imposto); cod_fiscal 2/3 (isenta/outras) nunca tem, entao o
-# grupo 13 (aliq+imposto) e' opcional e so' e' interpretado quando cod_fiscal='1'. O que vem depois
-# (bloco IPI - cod/base/imposto de IPI) e' ignorado, nao faz parte do modelo.
 RE_CONTAB = re.compile(
     r'^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(\d{1,4})\s+(\d{1,9})\s+(\d{2}/\d{2}/\d{4})\s+'
-    r'(\S+)\s+([A-Z]{2})\s+(' + NUM + r')\s+(\d)-(\d{3})'
-    r'(?:\s+(\d)\s+(' + NUM + r')(?:\s+(' + NUM + r')\s+(' + NUM + r'))?.*)?$')
+    r'(\S+)\s+([A-Z]{2})\s+(' + NUM + r')\s+(\d)-(\d{3})\s+(\d)\s+(' + NUM + r')(.*)$')
 
 
 def parse_livro_contab(text):
-    """Livro Registro de Entradas da contabilidade -> lista de lancamentos.
-    `text` deve vir de pdf_text_table (nao pdf_text/-layout)."""
+    """Livro Registro de Entradas da contabilidade -> lista de lancamentos."""
     rows, ultimo = [], None
     for line in text.splitlines():
         m = RE_CONTAB.match(line.strip())
         if m:
-            cod_fiscal = m.group(11) or '0'
-            aliq = to_float(m.group(13)) if cod_fiscal == '1' and m.group(13) else 0.0
-            imposto = to_float(m.group(14)) if cod_fiscal == '1' and m.group(14) else 0.0
+            resto = re.findall(NUM, m.group(13))
+            aliq = to_float(resto[0]) if len(resto) >= 2 else 0.0
+            imposto = to_float(resto[1]) if len(resto) >= 2 else 0.0
             ultimo = dict(data_entrada=m.group(1), especie=m.group(2).strip(),
                           serie=m.group(3), numero=m.group(4).lstrip('0') or '0',
                           data_doc=m.group(5), cod_emitente=m.group(6), uf=m.group(7),
                           valor_contabil=to_float(m.group(8)),
-                          cfop=m.group(9) + m.group(10), cod_fiscal=cod_fiscal,
-                          base_calculo=to_float(m.group(12)) if m.group(12) else 0.0,
-                          aliquota=aliq, imposto=imposto, difal_base=0.0, difal=0.0)
+                          cfop=m.group(9) + m.group(10), cod_fiscal=m.group(11),
+                          base_calculo=to_float(m.group(12)), aliquota=aliq,
+                          imposto=imposto, difal_base=0.0, difal=0.0)
             rows.append(ultimo)
             continue
         s = line.strip()
@@ -170,27 +160,93 @@ def parse_livro_contab(text):
     return rows
 
 
-# Le' a saida de pdf_text_table (nao pdf_text/-layout). No layout real cada nota ocupa a linha
-# principal (data...CFOP) seguida de "ICMS" e cod/base/aliq/imposto do proprio bloco ICMS, tudo
-# na MESMA linha - a linha de continuacao logo abaixo e' o bloco IPI (irrelevante aqui, ignorado).
 RE_ECOMET_MAIN = re.compile(
     r'^(\d{2}/\d{2}/\d{4})\s+(\d{2,3})\s+(\d{1,4})\s+(\d{1,9})\s+(\d{2}/\d{2}/\d{4})\s+'
-    r'(\d{11,14})\s+([A-Z]{2})\s+(' + NUM + r')\s+([1-7]\d{3})\s+ICMS\s+(\d)\s+'
-    r'(' + NUM + r')\s+(\d+(?:,\d+)?)\s+(' + NUM + r')\s*$')
+    r'(\d{11,14})\s+([A-Z]{2})\s+(' + NUM + r')\s+([1-7]\d{3})\s*$')
+RE_ECOMET_ICMS = re.compile(
+    r'^ICMS\s+(\d)\s+(' + NUM + r')\s+(\d+(?:,\d+)?)\s+(' + NUM + r')\s*$')
 
 
 def parse_livro_ecomet(text):
-    """Livro Registro de Entradas do SAGI/Ecomet -> lista de lancamentos.
-    `text` deve vir de pdf_text_table (nao pdf_text/-layout)."""
+    """Livro Registro de Entradas do SAGI/Ecomet -> lista de lancamentos."""
+    rows, pend = [], None
+    for line in text.splitlines():
+        s = line.strip()
+        mi = RE_ECOMET_ICMS.match(s)
+        if mi:
+            pend = dict(cod_fiscal=mi.group(1), base_calculo=to_float(mi.group(2)),
+                        aliquota=to_float(mi.group(3).replace(',', ',')),
+                        imposto=to_float(mi.group(4)))
+            continue
+        mm = RE_ECOMET_MAIN.match(s)
+        if mm:
+            r = dict(data_entrada=mm.group(1), especie=mm.group(2), serie=mm.group(3),
+                     numero=mm.group(4).lstrip('0') or '0', data_doc=mm.group(5),
+                     cnpj=mm.group(6), uf=mm.group(7),
+                     valor_contabil=to_float(mm.group(8)), cfop=mm.group(9),
+                     cod_fiscal='', base_calculo=0.0, aliquota=0.0, imposto=0.0)
+            if pend:
+                r.update(pend); pend = None
+            rows.append(r)
+    return rows
+
+
+# ---------------------------------------------------------------- Livro de Saidas (nota a nota)
+# Formatos novos (documentos de saida, recebidos em 31/08/2026) - validados por autoconferencia
+# contra o rodape' de cada documento e contra o total oficial de saidas da competencia 07/2026
+# (Dime quadro 02 / RAICMS SAIDAS: R$ 30.455.126,19), ambos batendo exato.
+RE_SAIDA_CONTAB = re.compile(
+    r'^(.+?)\s+(\d{1,3})\s+(\d{1,9})\s+(\d{2})\s+([A-Z]{2})\s+(' + NUM + r')\s+'
+    r'(\d)-(\d{3})\s+ICMS\s+(' + NUM + r')\s+(' + NUM + r')\s+(' + NUM + r')\s+(' + NUM + r')\s+(' + NUM + r')\s*$')
+
+
+def parse_livro_saidas_contab(text):
+    """Livro Registro de Saidas da contabilidade -> lista de lancamentos.
+
+    Notas canceladas: a contabilidade zera valor_contabil (e os demais campos) da nota cancelada,
+    sem nenhuma marcacao especial na linha - por isso nao ha' flag `cancelada` aqui (so' do lado
+    Ecomet, que mantem o valor original e anota "Cancelada" - ver parse_livro_saidas_ecomet)."""
     rows = []
     for line in text.splitlines():
-        m = RE_ECOMET_MAIN.match(line.strip())
+        m = RE_SAIDA_CONTAB.match(line.strip())
         if not m:
             continue
         rows.append(dict(
-            data_entrada=m.group(1), especie=m.group(2), serie=m.group(3),
-            numero=m.group(4).lstrip('0') or '0', data_doc=m.group(5),
-            cnpj=m.group(6), uf=m.group(7), valor_contabil=to_float(m.group(8)),
-            cfop=m.group(9), cod_fiscal=m.group(10), base_calculo=to_float(m.group(11)),
-            aliquota=to_float(m.group(12)), imposto=to_float(m.group(13))))
+            especie=m.group(1).strip(), serie=m.group(2), numero=m.group(3).lstrip('0') or '0',
+            dia=m.group(4), uf=m.group(5), valor_contabil=to_float(m.group(6)),
+            cfop=m.group(7) + m.group(8),
+            base_calculo=to_float(m.group(9)), aliquota=to_float(m.group(10)),
+            imposto=to_float(m.group(11)), isentas=to_float(m.group(12)), outras=to_float(m.group(13)),
+            cancelada=False))
+    return rows
+
+
+# Termina com um grupo de texto opcional (ex.: "Cancelada") depois do ultimo numero - sem ele,
+# as notas 6464/6465 (07/2026) nao casavam com o regex e sumiam da leitura (ver
+# claude/estado-atual.md, achado "nota cancelada").
+RE_SAIDA_ECOMET = re.compile(
+    r'^\s*(\d{1,3})\s+(\d{1,3})\s+(\d{1,9})\s+(\d{1,2})\s+([A-Z]{2})\s+(' + NUM + r')\s+'
+    r'(\d{4})\s+(' + NUM + r')\s+(\d+)\s+(' + NUM + r')\s+(' + NUM + r')\s+(' + NUM + r')'
+    r'\s*(\S.*)?$')
+
+
+def parse_livro_saidas_ecomet(text):
+    """Livro de Saidas do SAGI/Ecomet -> lista de lancamentos.
+
+    Nota cancelada: o Ecomet mantem o valor original da nota (a contabilidade zera) e anota
+    "Cancelada" apos a ultima coluna - marcada aqui em `cancelada`. Nao e' descartada: a
+    ingestao trata como divergencia a revisar (tipo `nota_cancelada`), nao como pareamento
+    normal nem como nota perdida."""
+    rows = []
+    for line in text.splitlines():
+        m = RE_SAIDA_ECOMET.match(line.rstrip())
+        if not m:
+            continue
+        cancelada = 'ancelad' in (m.group(13) or '')
+        rows.append(dict(
+            especie_cod=m.group(1), serie=m.group(2), numero=m.group(3).lstrip('0') or '0',
+            dia=m.group(4), uf=m.group(5), valor_contabil=to_float(m.group(6)), cfop=m.group(7),
+            base_calculo=to_float(m.group(8)), aliquota=to_float(m.group(9)),
+            imposto=to_float(m.group(10)), isentas=to_float(m.group(11)), outras=to_float(m.group(12)),
+            cancelada=cancelada))
     return rows

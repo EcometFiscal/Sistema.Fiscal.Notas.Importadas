@@ -54,6 +54,31 @@ export const api = {
   conciliacaoPeriodo: (comp) => req(`/conciliacao/periodos/${comp}`),
   justificarDivergencia: (id, dados) =>
     req(`/conciliacao/divergencias/${id}/justificar`, { method: 'POST', body: JSON.stringify(dados) }),
+  fecharConciliacaoIcms: (comp) => req(`/conciliacao/periodos/${comp}/fechar`, { method: 'POST' }),
+  importarConciliacaoIcms: async (comp, arquivos, { ciap, inscricaoEstadual } = {}) => {
+    const fd = new FormData()
+    for (const campo of ['contab_livro', 'contab_dime', 'ecomet_livro', 'ecomet_raicms',
+                          'contab_saida', 'ecomet_saida']) {
+      if (arquivos[campo]) fd.append(campo, arquivos[campo])
+    }
+    if (ciap) fd.append('ciap', ciap)
+    if (inscricaoEstadual) fd.append('inscricao_estadual', inscricaoEstadual)
+    const r = await fetch(BASE + `/conciliacao/periodos/${comp}/importar`, { method: 'POST', body: fd,
+                                                                            headers: { 'X-Usuario': 'fiscal',
+                                                                                       'X-Senha': senha.ler() } })
+    const texto = await r.text()
+    let corpo
+    try { corpo = texto ? JSON.parse(texto) : null }
+    catch {
+      throw Object.assign(new Error('erro'), { status: r.status, corpo: { detail: { mensagem:
+        r.status === 504 || !r.ok
+          ? 'A importação demorou demais e a função foi encerrada antes de terminar. Nada foi '
+            + 'gravado (a competência é importada de uma vez só) - pode tentar de novo.'
+          : 'Resposta inesperada do servidor ao importar.' } } })
+    }
+    if (!r.ok) throw Object.assign(new Error('erro'), { status: r.status, corpo })
+    return corpo
+  },
   importarZip: async (arquivo) => {
     const fd = new FormData()
     fd.append('arquivo', arquivo)

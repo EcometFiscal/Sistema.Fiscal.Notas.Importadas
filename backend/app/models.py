@@ -295,14 +295,22 @@ class ConcDocumentoFonte(Base):
 
 
 class ConcLancamentoEntrada(Base):
-    """Nota a nota do Livro de Entradas - de um lado (contabilidade) ou do outro (Ecomet).
+    """Nota a nota do Livro de Entradas OU do Livro de Saidas (campo `tipo` distingue) - de um
+    lado (contabilidade) ou do outro (Ecomet). O nome da classe/tabela ficou de quando so'
+    existia entrada; manter para nao quebrar o que ja' referencia - o `tipo` e' o que importa.
     O pareamento entre os dois lados e' feito em memoria por numero+valor (services/
-    conciliacao/reconcile.py), nunca por emitente: um lado usa codigo interno, o outro CNPJ."""
+    conciliacao/reconcile.py), nunca por emitente: um lado usa codigo interno, o outro CNPJ.
+
+    `cancelada`: nota que a contabilidade zerou o valor e o Ecomet manteve com anotacao
+    "Cancelada" (achado real da competencia 07/2026 - ver claude/estado-atual.md). So' e'
+    preenchida pelo lado Ecomet; a ingestao trata como divergencia `nota_cancelada`, nunca
+    silenciosamente."""
     __tablename__ = "conc_lancamento_entrada"
     id: Mapped[int] = mapped_column(primary_key=True)
     periodo_id: Mapped[int] = mapped_column(ForeignKey("conc_periodo.id", ondelete="CASCADE"))
     documento_id: Mapped[int] = mapped_column(ForeignKey("conc_documento_fonte.id", ondelete="CASCADE"))
     origem: Mapped[str] = mapped_column(String(15))
+    tipo: Mapped[str] = mapped_column(String(8), default="entrada")   # entrada | saida
     data_entrada: Mapped[dt.date | None] = mapped_column(Date)
     data_documento: Mapped[dt.date | None] = mapped_column(Date)
     especie: Mapped[str | None] = mapped_column(String(10))
@@ -318,10 +326,12 @@ class ConcLancamentoEntrada(Base):
     aliquota: Mapped[float] = mapped_column(Numeric(6, 2), default=0)
     imposto: Mapped[float] = mapped_column(DIN, default=0)
     difal: Mapped[float] = mapped_column(DIN, default=0)
+    cancelada: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (
         CheckConstraint("origem in ('contabilidade','ecomet')", name="ck_conclanc_origem"),
-        Index("ix_conclanc_periodo_num", "periodo_id", "origem", "numero"),
+        CheckConstraint("tipo in ('entrada','saida')", name="ck_conclanc_tipo"),
+        Index("ix_conclanc_periodo_num", "periodo_id", "origem", "tipo", "numero"),
         Index("ix_conclanc_periodo_cfop", "periodo_id", "cfop"),
     )
 
@@ -351,11 +361,19 @@ class ConcSaldoCfop(Base):
 class ConcDivergencia(Base):
     """Uma linha do painel de divergencias. tipo segue o vocabulario do pacote original:
     cfop_saldo | cfop_nota | coerencia_interna_ecomet | saldo_credor_anterior |
-    nota_ausente_ecomet | pareamento_manual."""
+    nota_ausente_ecomet | pareamento_manual | nota_cancelada (esse ultimo so' existe do lado
+    saida - contabilidade zera nota cancelada, Ecomet mantem valor original anotado).
+
+    `bloco` (entrada|saida|None) separa os 3 relatorios de divergencia pedidos: CFOP da Previa
+    Dime x Livro Fiscal (cfop_saldo/coerencia_interna_ecomet, tem bloco tanto de entrada quanto
+    de saida), Livro de Entradas (bloco='entrada') e Livro de Saidas (bloco='saida') da
+    contabilidade x Empresa. Fica None so' para o que e' do periodo inteiro, sem lado
+    entrada/saida (ex.: saldo_credor_anterior)."""
     __tablename__ = "conc_divergencia"
     id: Mapped[int] = mapped_column(primary_key=True)
     periodo_id: Mapped[int] = mapped_column(ForeignKey("conc_periodo.id", ondelete="CASCADE"))
     tipo: Mapped[str] = mapped_column(String(40))
+    bloco: Mapped[str | None] = mapped_column(String(8))     # entrada | saida | None
     severidade: Mapped[str] = mapped_column(String(10))     # alto | revisar
     status: Mapped[str] = mapped_column(String(25), default="aberta")
     cfop: Mapped[str | None] = mapped_column(String(4))
@@ -371,6 +389,7 @@ class ConcDivergencia(Base):
 
     __table_args__ = (
         CheckConstraint("severidade in ('alto','revisar')", name="ck_concdiv_severidade"),
+        CheckConstraint("bloco is null or bloco in ('entrada','saida')", name="ck_concdiv_bloco"),
         CheckConstraint(
             "status in ('aberta','corrigida_ecomet','devolvida_contabilidade','justificada')",
             name="ck_concdiv_status"),

@@ -1,0 +1,22 @@
+# Vercel Function em container - usado SO' em producao (Vercel detecta "Dockerfile.vercel" via
+# o service "backend" no vercel.json da raiz, entrypoint "Dockerfile.vercel"). Existe por um
+# motivo especifico: o modulo de Conciliacao de ICMS depende do binario `pdftotext`
+# (poppler-utils), que a funcao Python serverless padrao da Vercel nao tem - ver a nota em
+# app/services/conciliacao/parsers.py. Fora isso, e' a mesma API de sempre (app/main.py, todos
+# os routers) - nao so' a conciliacao passou a rodar em container, o backend inteiro passou.
+#
+# Dev local continua com o `backend/Dockerfile` (docker-compose.yml) - dockerfile separado, sem
+# poppler, porta 8000. Este aqui e' so' para a Vercel: porta 80 (convencao da Vercel pra Vercel
+# Functions em container - documentado em vercel.com/docs/functions/container-images, "Port
+# resolution": porta default 80, sem PORT customizado).
+FROM python:3.12-slim
+WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app ./app
+COPY scripts ./scripts
+EXPOSE 80
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-80}"]
