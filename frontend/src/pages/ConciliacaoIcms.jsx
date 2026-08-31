@@ -276,6 +276,9 @@ export default function ConciliacaoIcms() {
   const livroEcometEntrada = dados?.saldos.filter((s) => s.fonte === 'livro_ecomet' && s.tipo === 'entrada') || []
   const livroEcometSaida = dados?.saldos.filter((s) => s.fonte === 'livro_ecomet' && s.tipo === 'saida') || []
   const porFonte = (lista, cfop, fonte) => lista.find((s) => s.cfop === cfop && s.fonte === fonte)
+  const totalCampo = (lista, cfops, fonte, campo) =>
+    cfops.reduce((acc, c) => acc + (porFonte(lista, c, fonte)?.[campo] || 0), 0)
+  const totalLivro = (livroLista) => livroLista.reduce((acc, s) => acc + (s.valor_contabil || 0), 0)
 
   const divergencias = dados?.divergencias || []
   const divCfop = divergencias.filter((d) => d.tipo === 'cfop_saldo' || d.tipo === 'coerencia_interna_ecomet'
@@ -351,13 +354,23 @@ export default function ConciliacaoIcms() {
 
           <div className="cartao">
             <h2>Saldos por CFOP — Entradas</h2>
-            <p className="ajuda">Prévia Dime (contabilidade) × RAICMS/Livro Fiscal (Ecomet) × Livro de Entradas do Ecomet.</p>
+            <p className="ajuda">No formato da Dime: C.F.O.P., Valor Contábil, Base de Cálculo e Imposto Creditado
+              (Prévia Dime) — ao lado, para conferência, o Livro Fiscal (RAICMS) e o Livro de Entradas do Ecomet.</p>
             <div className="rolagem">
               <table>
-                <thead><tr>
-                  <th>CFOP</th><th className="dir">Dime</th><th className="dir">Livro Fiscal</th>
-                  <th className="dir">Livro Ecomet</th><th className="dir">Diferença</th>
-                </tr></thead>
+                <thead>
+                  <tr>
+                    <th rowSpan={2}>C.F.O.P.</th>
+                    <th colSpan={3} className="dir">Dime (Prévia)</th>
+                    <th colSpan={3} className="dir">Livro Fiscal (RAICMS)</th>
+                    <th rowSpan={2} className="dir">Livro Ecomet</th>
+                    <th rowSpan={2} className="dir">Diferença</th>
+                  </tr>
+                  <tr>
+                    <th className="dir">Valor Contábil</th><th className="dir">Base de Cálculo</th><th className="dir">Imposto Creditado</th>
+                    <th className="dir">Valor Contábil</th><th className="dir">Base de Cálculo</th><th className="dir">Imposto Creditado</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {cfopsEntrada.map((cfop) => {
                     const dime = porFonte(entradas, cfop, 'dime')
@@ -368,7 +381,11 @@ export default function ConciliacaoIcms() {
                       <tr key={cfop}>
                         <td className="num">{cfop}</td>
                         <td className="dir num">{dime ? rs(dime.valor_contabil) : '—'}</td>
+                        <td className="dir num">{dime ? rs(dime.base_calculo) : '—'}</td>
+                        <td className="dir num">{dime ? rs(dime.imposto) : '—'}</td>
                         <td className="dir num">{raicms ? rs(raicms.valor_contabil) : '—'}</td>
+                        <td className="dir num">{raicms ? rs(raicms.base_calculo) : '—'}</td>
+                        <td className="dir num">{raicms ? rs(raicms.imposto) : '—'}</td>
                         <td className="dir num">{livro ? rs(livro.valor_contabil) : '—'}</td>
                         <td className="dir num" style={{ color: Math.abs(dif) > 0.01 ? 'var(--vermelho)' : undefined }}>
                           {rs(dif)}</td>
@@ -376,19 +393,44 @@ export default function ConciliacaoIcms() {
                     )
                   })}
                 </tbody>
+                <tfoot>
+                  <tr style={{ fontWeight: 600, borderTop: '2px solid var(--linha)' }}>
+                    <td>TOTAL</td>
+                    <td className="dir num">{rs(totalCampo(entradas, cfopsEntrada, 'dime', 'valor_contabil'))}</td>
+                    <td className="dir num">{rs(totalCampo(entradas, cfopsEntrada, 'dime', 'base_calculo'))}</td>
+                    <td className="dir num">{rs(totalCampo(entradas, cfopsEntrada, 'dime', 'imposto'))}</td>
+                    <td className="dir num">{rs(totalCampo(entradas, cfopsEntrada, 'raicms', 'valor_contabil'))}</td>
+                    <td className="dir num">{rs(totalCampo(entradas, cfopsEntrada, 'raicms', 'base_calculo'))}</td>
+                    <td className="dir num">{rs(totalCampo(entradas, cfopsEntrada, 'raicms', 'imposto'))}</td>
+                    <td className="dir num">{rs(totalLivro(livroEcometEntrada))}</td>
+                    <td className="dir num">
+                      {rs(totalCampo(entradas, cfopsEntrada, 'dime', 'valor_contabil')
+                        - totalCampo(entradas, cfopsEntrada, 'raicms', 'valor_contabil'))}</td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
 
           <div className="cartao">
             <h2>Saldos por CFOP — Saídas</h2>
-            <p className="ajuda">Prévia Dime (contabilidade) × RAICMS/Livro Fiscal (Ecomet) × Livro de Saídas do Ecomet.</p>
+            <p className="ajuda">No formato da Dime: C.F.O.P., Valor Contábil, Base de Cálculo e Imposto Debitado
+              (Prévia Dime) — ao lado, para conferência, o Livro Fiscal (RAICMS) e o Livro de Saídas do Ecomet.</p>
             <div className="rolagem">
               <table>
-                <thead><tr>
-                  <th>CFOP</th><th className="dir">Dime</th><th className="dir">Livro Fiscal</th>
-                  <th className="dir">Livro Saídas Ecomet</th><th className="dir">Diferença</th>
-                </tr></thead>
+                <thead>
+                  <tr>
+                    <th rowSpan={2}>C.F.O.P.</th>
+                    <th colSpan={3} className="dir">Dime (Prévia)</th>
+                    <th colSpan={3} className="dir">Livro Fiscal (RAICMS)</th>
+                    <th rowSpan={2} className="dir">Livro Ecomet</th>
+                    <th rowSpan={2} className="dir">Diferença</th>
+                  </tr>
+                  <tr>
+                    <th className="dir">Valor Contábil</th><th className="dir">Base de Cálculo</th><th className="dir">Imposto Debitado</th>
+                    <th className="dir">Valor Contábil</th><th className="dir">Base de Cálculo</th><th className="dir">Imposto Debitado</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {cfopsSaida.map((cfop) => {
                     const dime = porFonte(saidas, cfop, 'dime')
@@ -399,7 +441,11 @@ export default function ConciliacaoIcms() {
                       <tr key={cfop}>
                         <td className="num">{cfop}</td>
                         <td className="dir num">{dime ? rs(dime.valor_contabil) : '—'}</td>
+                        <td className="dir num">{dime ? rs(dime.base_calculo) : '—'}</td>
+                        <td className="dir num">{dime ? rs(dime.imposto) : '—'}</td>
                         <td className="dir num">{raicms ? rs(raicms.valor_contabil) : '—'}</td>
+                        <td className="dir num">{raicms ? rs(raicms.base_calculo) : '—'}</td>
+                        <td className="dir num">{raicms ? rs(raicms.imposto) : '—'}</td>
                         <td className="dir num">{livro ? rs(livro.valor_contabil) : '—'}</td>
                         <td className="dir num" style={{ color: Math.abs(dif) > 0.01 ? 'var(--vermelho)' : undefined }}>
                           {rs(dif)}</td>
@@ -407,6 +453,21 @@ export default function ConciliacaoIcms() {
                     )
                   })}
                 </tbody>
+                <tfoot>
+                  <tr style={{ fontWeight: 600, borderTop: '2px solid var(--linha)' }}>
+                    <td>TOTAL</td>
+                    <td className="dir num">{rs(totalCampo(saidas, cfopsSaida, 'dime', 'valor_contabil'))}</td>
+                    <td className="dir num">{rs(totalCampo(saidas, cfopsSaida, 'dime', 'base_calculo'))}</td>
+                    <td className="dir num">{rs(totalCampo(saidas, cfopsSaida, 'dime', 'imposto'))}</td>
+                    <td className="dir num">{rs(totalCampo(saidas, cfopsSaida, 'raicms', 'valor_contabil'))}</td>
+                    <td className="dir num">{rs(totalCampo(saidas, cfopsSaida, 'raicms', 'base_calculo'))}</td>
+                    <td className="dir num">{rs(totalCampo(saidas, cfopsSaida, 'raicms', 'imposto'))}</td>
+                    <td className="dir num">{rs(totalLivro(livroEcometSaida))}</td>
+                    <td className="dir num">
+                      {rs(totalCampo(saidas, cfopsSaida, 'dime', 'valor_contabil')
+                        - totalCampo(saidas, cfopsSaida, 'raicms', 'valor_contabil'))}</td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </div>
