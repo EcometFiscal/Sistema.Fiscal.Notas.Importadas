@@ -2,10 +2,12 @@ import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import LoteImportacao
+from ..models import ConcPeriodo, LoteImportacao
+from ..services.conciliacao.exportacao import exportar_conciliacao
 from ..services.exportacao import (exportar_apuracao, exportar_auditoria_lote, exportar_estoque,
                                    exportar_pendencias)
 
@@ -43,3 +45,14 @@ def auditoria(lote_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Lote não encontrado")
     ref = dt.date.today().strftime("%Y%m%d")
     return _arquivo(exportar_auditoria_lote(db, lote), f"Auditoria Importacao Lote {lote_id} {ref}.xlsx")
+
+
+@router.get("/conciliacao/{competencia}")
+def conciliacao(competencia: str, db: Session = Depends(get_db)):
+    p = db.execute(select(ConcPeriodo).where(ConcPeriodo.competencia == competencia)
+                   ).scalars().first()
+    if not p:
+        raise HTTPException(404, detail=dict(
+            mensagem=f"Nenhuma competência de conciliação de ICMS importada para {competencia}."))
+    return _arquivo(exportar_conciliacao(p),
+                    f"Conciliacao ICMS {competencia.replace('-', '')}.xlsx")

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { api, rs } from '../api'
+import { api, baixar, rs } from '../api'
 
 const COR_SEVER = { alto: 'cancelada', revisar: 'acerto' }
 const COR_STATUS = { aberta: '', justificada: 'e', corrigida_ecomet: 'e', devolvida_contabilidade: 'e' }
@@ -311,6 +311,14 @@ export default function ConciliacaoIcms() {
               ))}
             </select>
           </div>
+          {comp && (
+            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <button type="button" className="leve"
+                      onClick={() => baixar(`/exportar/conciliacao/${comp}`)}>
+                baixar Excel (saldos por CFOP + notas de Entradas e Saídas)
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
