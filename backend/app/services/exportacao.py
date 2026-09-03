@@ -171,7 +171,11 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
     ws.cell(linha, 7, f"=G{p}-(G{p+1}+G{p+2})").number_format = DINHEIRO
     linha += 1
     ws.cell(linha, 1, "Total").font = Font(name=FONTE, bold=True, size=11)
-    ws.cell(linha, 7, f"=G{p+2}+G{linha-1}").number_format = DINHEIRO
+    # A diferenca so' soma ao Total quando e' positiva (credito de verdade). Quando a diferenca
+    # e' negativa, o FUNDOSOCIAL sozinho (G{p+2}) e' maior que "FUNDOSOCIAL + diferenca" ficaria -
+    # nesse caso a diferenca negativa e' desconsiderada e o Total fica igual ao FUNDOSOCIAL
+    # (regra pedida pelo Victor em 03/09/2026).
+    ws.cell(linha, 7, f"=G{p+2}+MAX(G{linha-1},0)").number_format = DINHEIRO
     total_vendas = linha
     linha += 2
 
@@ -192,7 +196,8 @@ def exportar_apuracao(db: Session, competencia: str) -> BytesIO:
     ws.cell(linha, 7, f"=G{p2}-(G{p2+1}+G{p2+2})").number_format = DINHEIRO
     linha += 1
     ws.cell(linha, 1, "Total").font = Font(name=FONTE, bold=True, size=11)
-    ws.cell(linha, 7, f"=G{p2+2}+G{linha-1}").number_format = DINHEIRO
+    # Mesma regra do bloco de Vendas acima: diferenca negativa e' desconsiderada no Total.
+    ws.cell(linha, 7, f"=G{p2+2}+MAX(G{linha-1},0)").number_format = DINHEIRO
     total_dev = linha
     linha += 1
     ws.cell(linha, 1, "TOTAL A RECOLHER").font = Font(name=FONTE, bold=True, size=11)
