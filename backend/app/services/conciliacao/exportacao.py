@@ -35,7 +35,8 @@ def _cabecalho_grupo(ws, linha, col_ini, col_fim, texto):
 
 def _bloco_saldos(ws, linha, cfops, dime_por_cfop, raicms_por_cfop):
     """Uma linha por CFOP do bloco (Entradas ou Saidas): Dime nas colunas C-E, RAICMS em G-I,
-    diferenca (so' valor contabil) na K - mesmo desenho do exemplo do Victor."""
+    diferenca de cada um dos tres campos (Valor Contabil, Base de Calculo, Imposto Creditado) em
+    K-M - pedido do Victor em 31/08/2026: antes so' tinha a diferenca do Valor Contabil."""
     inicio = linha
     for cfop in cfops:
         d = dime_por_cfop.get(cfop)
@@ -48,7 +49,9 @@ def _bloco_saldos(ws, linha, cfops, dime_por_cfop, raicms_por_cfop):
         ws.cell(linha, 8, float(r.base_calculo) if r else 0).number_format = DINHEIRO
         ws.cell(linha, 9, float(r.imposto) if r else 0).number_format = DINHEIRO
         ws.cell(linha, 11, f"=C{linha}-G{linha}").number_format = DINHEIRO
-        for col in range(2, 12):
+        ws.cell(linha, 12, f"=D{linha}-H{linha}").number_format = DINHEIRO
+        ws.cell(linha, 13, f"=E{linha}-I{linha}").number_format = DINHEIRO
+        for col in range(2, 14):
             ws.cell(linha, col).font = Font(name=FONTE, size=11)
             ws.cell(linha, col).border = BORDA
         linha += 1
@@ -60,7 +63,7 @@ def _aba_saldos_cfop(wb, periodo: ConcPeriodo):
     ws.title = "Saldos por CFOP"
     ws.sheet_view.showGridLines = False
     larguras = {"A": 3, "B": 10, "C": 16, "D": 16, "E": 17, "F": 3,
-                "G": 16, "H": 16, "I": 17, "J": 3, "K": 15}
+                "G": 16, "H": 16, "I": 17, "J": 3, "K": 15, "L": 15, "M": 16}
     for col, w in larguras.items():
         ws.column_dimensions[col].width = w
 
@@ -77,10 +80,12 @@ def _aba_saldos_cfop(wb, periodo: ConcPeriodo):
     _cabecalho_grupo(ws, linha, 1, 2, "Entradas")
     _cabecalho_grupo(ws, linha, 3, 5, "Contabilidade (Dime)")
     _cabecalho_grupo(ws, linha, 7, 9, "Ecomet (RAICMS)")
+    _cabecalho_grupo(ws, linha, 11, 13, "Diferença (Contabilidade − Ecomet)")
     linha += 1
     for col, txt in [(2, "CFOP"), (3, "Valor Contábil"), (4, "Base de Cálculo"),
                       (5, "Imposto Creditado"), (7, "Valor Contábil"), (8, "Base de Cálculo"),
-                      (9, "Imposto Creditado"), (11, "Diferença")]:
+                      (9, "Imposto Creditado"), (11, "Valor Contábil"), (12, "Base de Cálculo"),
+                      (13, "Imposto Creditado")]:
         c = ws.cell(linha, col, txt)
         c.font = Font(name=FONTE, bold=True, size=11)
         c.alignment = Alignment(horizontal="center", wrap_text=True)
@@ -89,7 +94,7 @@ def _aba_saldos_cfop(wb, periodo: ConcPeriodo):
     fim_ent = linha - 1
     if cfops_entrada:
         ws.cell(linha, 1, "TOTAL").font = Font(name=FONTE, bold=True, size=10)
-        for col in (3, 4, 5, 7, 8, 9, 11):
+        for col in (3, 4, 5, 7, 8, 9, 11, 12, 13):
             letra = get_column_letter(col)
             cel = ws.cell(linha, col, f"=SUM({letra}{ini_ent}:{letra}{fim_ent})")
             cel.number_format = DINHEIRO
@@ -103,7 +108,7 @@ def _aba_saldos_cfop(wb, periodo: ConcPeriodo):
     fim_sai = linha - 1
     if cfops_saida:
         ws.cell(linha, 1, "TOTAL").font = Font(name=FONTE, bold=True, size=10)
-        for col in (3, 4, 5, 7, 8, 9, 11):
+        for col in (3, 4, 5, 7, 8, 9, 11, 12, 13):
             letra = get_column_letter(col)
             cel = ws.cell(linha, col, f"=SUM({letra}{ini_sai}:{letra}{fim_sai})")
             cel.number_format = DINHEIRO
