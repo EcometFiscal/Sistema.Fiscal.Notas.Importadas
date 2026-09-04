@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { api, baixar, rs } from '../api'
+import { api, baixar, enviarNotasCredores, rs } from '../api'
 
 const COR_SEVER = { alto: 'cancelada', revisar: 'acerto' }
 const COR_STATUS = { aberta: '', justificada: 'e', corrigida_ecomet: 'e', devolvida_contabilidade: 'e' }
@@ -210,6 +210,46 @@ function ImportarPeriodo({ competenciaInicial, aoImportar }) {
   )
 }
 
+function NotasCredores({ comp }) {
+  const [arquivo, setArquivo] = useState(null)
+  const [enviando, setEnviando] = useState(false)
+  const [erro, setErro] = useState(null)
+
+  async function enviar() {
+    if (!arquivo) return
+    setErro(null)
+    setEnviando(true)
+    try {
+      await enviarNotasCredores(comp, arquivo)
+      setArquivo(null)
+    } catch (e) {
+      setErro(e?.corpo?.detail?.mensagem || 'Não foi possível conciliar a planilha.')
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return (
+    <div className="cartao">
+      <h2>Notas de Credores — preencher CFOP e conciliar por CFOP</h2>
+      <p className="ajuda">
+        Envie a planilha de Notas de Credores (Contas a Pagar) desta competência: o sistema
+        preenche o CFOP de entrada de cada nota a partir do Livro de Entradas da Contabilidade
+        (casando por número da NF-e + valor) e devolve a planilha com o CFOP preenchido, mais
+        uma aba de conciliação por CFOP entre a planilha e o Livro.
+      </p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input type="file" accept=".xlsx"
+               onChange={(e) => setArquivo(e.target.files[0] || null)} />
+        <button type="button" className="acao" disabled={!arquivo || enviando} onClick={enviar}>
+          {enviando ? 'conciliando…' : 'conciliar e baixar planilha'}
+        </button>
+      </div>
+      {erro && <p style={{ color: 'var(--vermelho)', fontSize: 13, marginTop: 8 }}>{erro}</p>}
+    </div>
+  )
+}
+
 export default function ConciliacaoIcms() {
   const [periodos, setPeriodos] = useState([])
   const [comp, setComp] = useState(null)
@@ -321,6 +361,8 @@ export default function ConciliacaoIcms() {
           )}
         </div>
       </div>
+
+      {comp && <NotasCredores key={comp} comp={comp} />}
 
       <ImportarPeriodo key={comp} competenciaInicial={comp} aoImportar={aoImportar} />
 

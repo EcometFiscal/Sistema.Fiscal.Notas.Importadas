@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,8 +20,10 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..models import ConcDivergencia, ConcFechamento, ConcPeriodo
 from ..services.conciliacao.ingestao import importar_periodo
+from ..services.conciliacao.notas_credores import gerar_planilha_conciliada
 
 router = APIRouter(prefix="/conciliacao", tags=["conciliacao"])
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _periodo_ou_404(db: Session, competencia: str) -> ConcPeriodo:
@@ -125,6 +128,27 @@ def periodo(competencia: str, db: Session = Depends(get_db)):
     return dict(id=p.id, competencia=p.competencia, inscricao_estadual=p.inscricao_estadual,
                status=p.status, saldo_credor_anterior=float(p.saldo_credor_anterior or 0),
                saldos=saldos, divergencias=divergencias, apuracao=apuracao, documentos=documentos)
+
+
+@router.post("/periodos/{competencia}/notas-credores")
+async def notas_credores(
+    competencia: str,
+    planilha: UploadFile = File(..., description="Planilha de Notas de Credores (Contas a Pagar)"),
+    db: Session = Depends(get_db),
+):
+    """Recebe a planilha de Notas de Credores, preenche o CFOP de entrada de cada nota a partir
+    do Livro de Entradas da Contabilidade desta competência (casando por número da NF-e + valor)
+    e devolve a mesma planilha com o CFOP preenchido, mais uma aba de conciliação por CFOP entre
+    a planilha e o Livro. Pedido pelo Victor em 04/09/2026."""
+    p = _periodo_ou_404(db, competencia)
+    conteudo = await planilha.read()
+    try:
+        saida = gerar_planilha_conciliada(p, conteudo)
+    except ValueError as e:
+        raise HTTPException(400, detail=dict(mensagem=str(e)))
+    nome = f"Notas Credores Conciliado {competencia.replace('-', '')}.xlsx"
+    return StreamingResponse(saida, media_type=XLSX,
+                             headers={"Content-Disposition": f'attachment; filename="{nome}"'})
 
 
 class JustificativaIn(BaseModel):

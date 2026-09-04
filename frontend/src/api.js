@@ -118,6 +118,34 @@ export const baixar = async (caminho) => {
   URL.revokeObjectURL(url)
 }
 
+// Envia a planilha de Notas de Credores e baixa a resposta (mesma planilha, com o CFOP de
+// entrada preenchido a partir do Livro de Entradas da Contabilidade + aba de conciliação por
+// CFOP) - mesmo padrão de download de `baixar`, mas com upload multipart na ida.
+export const enviarNotasCredores = async (comp, arquivo) => {
+  const fd = new FormData()
+  fd.append('planilha', arquivo)
+  const r = await fetch(BASE + `/conciliacao/periodos/${comp}/notas-credores`, {
+    method: 'POST', body: fd,
+    headers: { 'X-Usuario': 'fiscal', 'X-Senha': senha.ler() },
+  })
+  if (!r.ok) {
+    const texto = await r.text()
+    let corpo
+    try { corpo = texto ? JSON.parse(texto) : null } catch { corpo = null }
+    throw Object.assign(new Error('erro'), { status: r.status, corpo })
+  }
+  const blob = await r.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = (r.headers.get('Content-Disposition') || '').split('filename="')[1]?.replace('"', '')
+    || 'notas-credores-conciliado.xlsx'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 export const kg = (v) =>
   (v ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
 export const rs = (v) =>
